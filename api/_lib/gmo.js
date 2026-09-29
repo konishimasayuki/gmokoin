@@ -61,18 +61,30 @@ export function closedOnly(candles, interval, now) {
   return candles.filter((k) => k.t + ms <= now);
 }
 
-// Redisに短時間キャッシュ（ティックごとにGMOへ叩きすぎない）
+// 同じ関数インスタンス内のメモリキャッシュ（Redisの転送量とコマンド数を節約）
+const mem = new Map();
+
+// 短時間キャッシュ：メモリ → Redis → GMO の順に見る
 export async function getCachedKlines(
   symbol,
   interval,
   now,
-  { ttlMs = 15000, days = 2, keep = 900 } = {},
+  { ttlMs = 15000, days = 2, keep = 600 } = {},
 ) {
   const key = K.klines(symbol, interval);
+  const m = mem.get(key);
+  if (m && now - m.at < ttlMs) return m.data;
   const cached = await redis.get(key);
-  if (cached && now - cached.at < ttlMs && Array.isArray(cached.data)) return cached.data;
+  if (cached && now - cached.at < ttlMs && Array.isArray(cached.data)) {
+    mem.set(key, cached);
+    return cached.data;
+  }
   const all = await getRecentKlines(symbol, interval, now, days);
   const data = all.slice(-keep);
-  if (data.length) await redis.set(key, { at: now, data }, { ex: 300 });
+  if (data.length) {
+    const v = { at: now, data };
+    mem.set(key, v);
+    await redis.set(key, v, { ex: 300 });
+  }
   return data;
 }

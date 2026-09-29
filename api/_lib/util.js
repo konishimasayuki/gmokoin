@@ -4,7 +4,7 @@ export const DEFAULT_CONFIG = {
   symbol: "USD_JPY",
   units: 10000,
   running: false,
-  tickSec: 5,
+  tickSec: 10,
   maxSpreadPips: 1.0,
   dailyLossLimit: 5000,
   maxTradesPerDay: 30,
