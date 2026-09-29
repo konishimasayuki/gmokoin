@@ -20,6 +20,16 @@ export const K = {
   cooldown: "fxbot:cooldown",
   lastSignal: "fxbot:last_signal",
   klines: (symbol, interval) => `fxbot:kl:${symbol}:${interval}`,
+  streak: "fxbot:streak",
+  pauseUntil: "fxbot:pause_until",
+  levels: (symbol) => `fxbot:levels:${symbol}`,
+  brief: (symbol, bd) => `fxbot:brief:${symbol}:${bd}`,
+  briefLock: "fxbot:lock:brief",
+  report: (kind, key) => `fxbot:report:${kind}:${key}`,
+  reportIds: "fxbot:report_ids",
+  reportLock: "fxbot:lock:report",
+  backtestLast: "fxbot:backtest:last",
+  btDay: (symbol, bd) => `fxbot:bt:${symbol}:${bd}`,
 };
 
 export async function addLog(msg, level = "info") {

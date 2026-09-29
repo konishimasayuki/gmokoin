@@ -20,7 +20,33 @@ export const DEFAULT_CONFIG = {
   maxAtrPips: 6,
   cooldownSec: 60,
   eventBufferMin: 15,
+  // 取引時間帯（JST）東京9-15時 / ロンドン16-21時 / NY21-翌2時。それ以外は取引しない
+  sessions: { tokyo: true, london: true, ny: true },
+  htfFilter: true, // 5分足の向きと一致するときだけ
+  beOn: true, // 建値ストップ
+  beTriggerR: 0.6, // 損切り幅の何倍の含み益で建値へ
+  lossStreakMax: 3, // 連敗ストップ
+  lossStreakPauseMin: 60,
+  levelFilter: true, // 利確までの間に水平線があれば見送り
+  sizingMode: "fixed", // fixed | risk
+  paperBalance: 1000000,
+  riskPct: 0.5,
+  maxUnits: 200000,
+  minRr: 1.0,
 };
+
+export const BOOLEAN_KEYS = ["running", "feeOn", "htfFilter", "beOn", "levelFilter"];
+
+// 増やすとリスクが上がる項目（損失中・連敗中はロック）
+export const RISK_UP_KEYS = [
+  "units",
+  "riskPct",
+  "maxUnits",
+  "dailyLossLimit",
+  "maxTradesPerDay",
+  "lossStreakMax",
+  "slMaxPips",
+];
 
 // 設定画面で変更できる数値項目と許容範囲
 export const NUMERIC_LIMITS = {
@@ -40,6 +66,13 @@ export const NUMERIC_LIMITS = {
   maxAtrPips: [0.5, 100],
   cooldownSec: [0, 3600],
   eventBufferMin: [0, 120],
+  beTriggerR: [0.2, 3],
+  lossStreakMax: [1, 20],
+  lossStreakPauseMin: [0, 1440],
+  paperBalance: [10000, 100000000],
+  riskPct: [0.05, 5],
+  maxUnits: [10000, 1000000],
+  minRr: [0.3, 5],
 };
 
 const JST = 9 * 3600 * 1000;
@@ -79,6 +112,18 @@ export function jstLabel(ts) {
 // GMOコインのKLine日付は日本時間6:00に切り替わる
 export function businessDate(ts) {
   return jstDate(ts - 6 * 3600 * 1000);
+}
+
+// 営業日(bd: YYYYMMDD, 6:00開始)の "HH:MM" を絶対時刻へ。6時前は翌日扱い
+export function businessHmToTs(hm, bd) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(hm || "").trim());
+  if (!m || !/^\d{8}$/.test(String(bd))) return null;
+  const y = Number(bd.slice(0, 4));
+  const mo = Number(bd.slice(4, 6));
+  const d = Number(bd.slice(6, 8));
+  const hh = Number(m[1]);
+  const base = Date.UTC(y, mo - 1, d) - JST;
+  return base + ((hh < 6 ? hh + 24 : hh) * 60 + Number(m[2])) * 60000;
 }
 
 // "HH:MM"(JST) を基準時刻付近の絶対時刻(ms)へ。基準より12時間以上前なら翌日扱い。
@@ -124,5 +169,9 @@ export function pnlYen(side, entry, exit, units, conv) {
 }
 
 export function mergeConfig(stored) {
-  return { ...DEFAULT_CONFIG, ...(stored || {}) };
+  const c = { ...DEFAULT_CONFIG, ...(stored || {}) };
+  c.sessions = { ...DEFAULT_CONFIG.sessions, ...(stored?.sessions || {}) };
+  return c;
 }
+
+export const MIN_UNITS = 10000;

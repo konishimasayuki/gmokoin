@@ -50,3 +50,5 @@ export function mdhm(ts) {
 export function symbolLabel(s) {
   return String(s || "").replace("_", "/");
 }
+
+export const CRITIC_JP = { AGREE: "同意", WEAKEN: "弱め", VETO: "却下" };

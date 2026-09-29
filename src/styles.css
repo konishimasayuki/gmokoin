@@ -491,3 +491,543 @@ legend {
     transition: none !important;
   }
 }
+
+/* ---- v2: タブ構成・AI頭脳・成績 ---- */
+h3 {
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin: 12px 0 2px;
+  font-weight: 700;
+}
+.app {
+  padding-bottom: calc(84px + env(safe-area-inset-bottom, 0px));
+}
+.content {
+  display: grid;
+  gap: 12px;
+}
+.content > .grid {
+  margin: 0;
+}
+.top {
+  position: sticky;
+  top: env(safe-area-inset-top, 0px);
+  z-index: 5;
+  background: var(--paper);
+  padding: 6px 0 8px;
+}
+.run {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.run .led {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+.run.on .led {
+  background: var(--surface);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+@keyframes pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+.notice.as-btn {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  cursor: pointer;
+}
+.notice.soft {
+  background: color-mix(in srgb, var(--brass) 12%, var(--surface));
+  border-left-color: var(--brass);
+}
+.quote {
+  margin: 0;
+}
+.quote-top {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.badge {
+  display: inline-block;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.badge.buy {
+  color: var(--buy);
+  border-color: color-mix(in srgb, var(--buy) 50%, var(--line));
+}
+.badge.sell {
+  color: var(--sell);
+  border-color: color-mix(in srgb, var(--sell) 50%, var(--line));
+}
+.badge.brass {
+  color: var(--brass);
+  border-color: color-mix(in srgb, var(--brass) 50%, var(--line));
+}
+.critic-line {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  flex-wrap: wrap;
+  margin: 6px 0;
+  font-size: 0.86rem;
+}
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+.metric span {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+.metric b {
+  display: block;
+  font-size: 1.35rem;
+  line-height: 1.15;
+}
+.metric small {
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+.empty {
+  padding: 8px 0;
+}
+
+/* AIチーム */
+.team {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.member {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px;
+  border-top: 3px solid var(--line);
+}
+.member.ok {
+  border-top-color: var(--buy);
+}
+.member b {
+  display: block;
+  font-size: 0.88rem;
+}
+.member small {
+  display: block;
+  font-size: 0.7rem;
+  color: var(--muted);
+}
+.member span {
+  display: block;
+  font-size: 0.8rem;
+  margin-top: 2px;
+}
+.event small,
+.news small {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+.news {
+  list-style: none;
+  padding: 0;
+  margin: 4px 0;
+  display: grid;
+  gap: 6px;
+}
+.news li {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 0.85rem;
+}
+.zone {
+  display: grid;
+  grid-template-columns: 1fr 2fr;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.zone span {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+.zone b {
+  font-size: 1rem;
+}
+.zone small {
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+.zonebar {
+  position: relative;
+  height: 6px;
+  border-radius: 3px;
+  margin: 6px 0 2px;
+  background: linear-gradient(90deg, var(--buy), var(--line), var(--sell));
+  opacity: 0.8;
+}
+.zonebar i {
+  position: absolute;
+  top: -4px;
+  width: 4px;
+  height: 14px;
+  margin-left: -2px;
+  border-radius: 2px;
+  background: var(--ink);
+}
+.ladder {
+  display: grid;
+  gap: 2px;
+}
+.rung {
+  display: grid;
+  grid-template-columns: 76px auto 1fr auto;
+  gap: 8px;
+  align-items: center;
+  padding: 5px 8px;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  background: var(--paper);
+}
+.rung b {
+  font-size: 1.05rem;
+}
+.rung.above b {
+  color: var(--sell);
+}
+.rung.below b {
+  color: var(--buy);
+}
+.rung .dots {
+  color: var(--brass);
+  letter-spacing: 1px;
+  font-size: 0.6rem;
+}
+.rung small {
+  color: var(--muted);
+}
+.rung.now {
+  background: var(--ink);
+  color: var(--paper);
+  grid-template-columns: 76px 1fr;
+}
+.rung.now b {
+  color: var(--paper);
+}
+
+/* 成績 */
+.seg {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--surface);
+}
+.seg button {
+  border: 0;
+  background: none;
+  padding: 8px 4px;
+  font-size: 0.85rem;
+  color: var(--muted);
+  cursor: pointer;
+}
+.seg button[aria-selected="true"] {
+  background: var(--ink);
+  color: var(--paper);
+  font-weight: 700;
+}
+.btns {
+  display: flex;
+  gap: 6px;
+}
+.chips {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 6px;
+  margin-bottom: 6px;
+}
+.chip {
+  border: 1px solid var(--line);
+  background: var(--paper);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 0.75rem;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.chip.on {
+  border-color: var(--ink);
+  color: var(--ink);
+}
+.report-head {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.report-head small {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+.grade {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  font-family: "Barlow Condensed", sans-serif;
+  font-size: 1.7rem;
+  font-weight: 700;
+  background: var(--paper);
+  border: 1px solid var(--line);
+}
+.g-A,
+.g-B {
+  color: var(--buy);
+}
+.g-D,
+.g-E {
+  color: var(--sell);
+}
+.suggest {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px;
+  margin: 6px 0;
+}
+.suggest b {
+  display: block;
+  font-size: 0.86rem;
+}
+.suggest span {
+  font-size: 1rem;
+}
+.suggest small {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+.tbl {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+.tbl th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--muted);
+  font-size: 0.72rem;
+  border-bottom: 1px solid var(--line);
+  padding: 4px 2px;
+}
+.tbl td {
+  border-bottom: 1px solid var(--line);
+  padding: 5px 2px;
+}
+.tbl td.num {
+  font-size: 0.95rem;
+}
+.bt-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 8px;
+  align-items: end;
+  margin: 8px 0;
+}
+.bt-form label span {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+.bt-form select,
+.bt-form input,
+.settings select {
+  width: 100%;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+}
+.bt-form .primary {
+  width: auto;
+  padding: 10px 18px;
+}
+
+/* 設定 */
+.settings {
+  display: grid;
+  gap: 12px;
+}
+.toggle {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+.toggle:last-of-type {
+  border-bottom: 0;
+}
+.toggle small {
+  display: block;
+  font-size: 0.74rem;
+  color: var(--muted);
+}
+.toggle input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+}
+.toggle .sw {
+  flex: none;
+  width: 46px;
+  height: 28px;
+  border-radius: 14px;
+  background: var(--line);
+  position: relative;
+  transition: background 0.2s;
+}
+.toggle .sw::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--surface);
+  transition: transform 0.2s;
+}
+.toggle input:checked + .sw {
+  background: var(--buy);
+}
+.toggle input:checked + .sw::after {
+  transform: translateX(18px);
+}
+.toggle input:focus-visible + .sw {
+  outline: 2px solid var(--brass);
+  outline-offset: 2px;
+}
+.field {
+  grid-template-columns: 1fr 110px;
+}
+.save-bar {
+  position: sticky;
+  bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+  z-index: 4;
+}
+.ghost.wide {
+  width: 100%;
+  padding: 10px;
+}
+.danger {
+  border-color: color-mix(in srgb, var(--sell) 40%, var(--line));
+}
+.foot-note {
+  font-size: 0.74rem;
+  color: var(--muted);
+  margin: 4px 0 0;
+}
+
+/* 下部タブバー */
+.tabbar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 8;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-top: 1px solid var(--line);
+  padding: 6px 0 calc(6px + env(safe-area-inset-bottom, 0px));
+}
+.tabbar button {
+  position: relative;
+  border: 0;
+  background: none;
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+  padding: 4px 0;
+  color: var(--muted);
+  font-size: 0.7rem;
+  cursor: pointer;
+}
+.tabbar svg {
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.tabbar button.on {
+  color: var(--ink);
+  font-weight: 700;
+}
+.tabbar .dot {
+  position: absolute;
+  top: 4px;
+  right: calc(50% - 18px);
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--brass);
+}
+.toast {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(84px + env(safe-area-inset-bottom, 0px));
+  background: var(--ink);
+  color: var(--paper);
+  padding: 8px 16px;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  z-index: 9;
+}
+@media (min-width: 900px) {
+  .tabbar {
+    max-width: 560px;
+    margin: 0 auto 12px;
+    border: 1px solid var(--line);
+    border-radius: 16px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .run.on .led {
+    animation: none;
+  }
+}
