@@ -1071,3 +1071,50 @@ h3 {
 .opt .ghost {
   justify-self: start;
 }
+
+.progress {
+  position: relative;
+  margin-top: 8px;
+  border-radius: 8px;
+  background: var(--paper);
+  overflow: hidden;
+  min-height: 34px;
+}
+.progress div {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: color-mix(in srgb, var(--brass) 25%, transparent);
+  transition: width 0.4s;
+}
+.progress span {
+  position: relative;
+  display: block;
+  padding: 7px 10px;
+  font-size: 0.8rem;
+}
+.checks {
+  list-style: none;
+  padding: 0;
+  margin: 4px 0;
+  display: grid;
+  gap: 4px;
+}
+.checks li {
+  display: flex;
+  gap: 8px;
+  font-size: 0.82rem;
+}
+.checks .mark {
+  font-style: normal;
+  font-weight: 700;
+  width: 1em;
+}
+.checks .ok .mark {
+  color: var(--buy);
+}
+.checks .ng .mark {
+  color: var(--sell);
+}
+.checks small {
+  display: block;
+}

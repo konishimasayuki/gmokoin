@@ -172,19 +172,42 @@ function Reports({ reports, loading, onReport, onAdopt, lock }) {
   );
 }
 
-function Optimize({ result, loading, onRun, onUse, auto }) {
+const CHECKS = [
+  ["split", "前半60日で選び、後半30日でも勝てたか"],
+  ["weeks", "ランダムな40週で、7割以上の週が勝ちか"],
+  ["mc", "1000回の引き直しで、マイナスの確率が25%以下か"],
+  ["stress", "スプレッド2倍＋約定のズレでも負けないか"],
+  ["neighbors", "設定を少しズラしても勝てるか"],
+];
+
+function checkValue(key, b) {
+  if (key === "split") return `後半 PF ${b.test.pf}（${b.test.trades}回・${yen(b.test.net)}）`;
+  if (key === "weeks")
+    return `勝ち週 ${Math.round(b.weeks.winShare * 100)}%（${b.weeks.counted}週）`;
+  if (key === "mc")
+    return `マイナス確率 ${Math.round(b.mc.lossProb * 100)}%・最悪時 -${b.mc.dd95.toLocaleString("ja-JP")}円`;
+  if (key === "stress") return `PF ${b.stress.pf}（${yen(b.stress.net)}）`;
+  return `${b.neighbors.total}通り中 ${b.neighbors.ok}通りでプラス`;
+}
+
+function Optimize({ result, loading, onRun, onUse, auto, progress }) {
   return (
     <Card title="AIによる銘柄・設定の自動選定">
       <p className="hint">
-        全銘柄で約580通りの設定を試し、前半14日で選んだ設定が後半6日でも通用したか（PF1.1以上・プラス）を確認します。
+        全銘柄で約580通りの設定を90日分のデータで試し、5段階の検証をすべて通ったものだけを採用します。ランダムな週と引き直しは日替わりです。
       </p>
       <button type="button" className="primary" onClick={onRun} disabled={loading.optimize}>
-        {loading.optimize
-          ? "全銘柄を検証中…（1〜3分）"
-          : auto
-            ? "いま選び直す"
-            : "全銘柄で検証する"}
+        {loading.optimize ? "検証中…" : auto ? "いま選び直す" : "全銘柄で検証する"}
       </button>
+      {progress && (
+        <div className="progress">
+          <div style={{ width: `${((progress.i - 1) / progress.total) * 100}%` }} />
+          <span>
+            {progress.i}/{progress.total} {symbolLabel(progress.symbol)}{" "}
+            を検証中（初回はデータ取得で数分かかります）
+          </span>
+        </div>
+      )}
       {result && (
         <>
           <p className="meta">
@@ -195,53 +218,62 @@ function Optimize({ result, loading, onRun, onUse, auto }) {
             {result.applied?.status === "skipped" && `・${result.applied.why}`}
           </p>
           <div className="opt-list">
-            {result.results.map((r) => (
-              <div
-                key={r.symbol}
-                className={`opt ${result.pick?.symbol === r.symbol ? "picked" : ""}`}
-              >
-                <div className="opt-head">
-                  <b>{symbolLabel(r.symbol)}</b>
-                  {r.error ? (
-                    <Badge>{r.error}</Badge>
-                  ) : r.best?.pass ? (
-                    <Badge tone="buy">合格</Badge>
-                  ) : (
-                    <Badge tone="sell">不合格</Badge>
-                  )}
-                  {result.pick?.symbol === r.symbol && <Badge tone="brass">採用</Badge>}
-                </div>
-                {r.best ? (
-                  <>
-                    <small>{r.best.label}</small>
-                    <div className="opt-nums num">
-                      <span>
-                        学習 PF {r.best.train.pf}（{r.best.train.trades}回）
-                      </span>
-                      <span className={r.best.test.pf >= 1 ? "up" : "down"}>
-                        検証 PF {r.best.test.pf}（{r.best.test.trades}回・{yen(r.best.test.net)}）
-                      </span>
-                    </div>
-                    {!auto && r.best.pass && (
-                      <button
-                        type="button"
-                        className="ghost"
-                        onClick={() => onUse(r.symbol, r.best.params)}
-                      >
-                        この銘柄と設定を使う
-                      </button>
+            {result.results.map((r) => {
+              const b = r.best;
+              return (
+                <div
+                  key={r.symbol}
+                  className={`opt ${result.pick?.symbol === r.symbol ? "picked" : ""}`}
+                >
+                  <div className="opt-head">
+                    <b>{symbolLabel(r.symbol)}</b>
+                    {r.error ? (
+                      <Badge>{r.error}</Badge>
+                    ) : b?.pass ? (
+                      <Badge tone="buy">合格</Badge>
+                    ) : (
+                      <Badge tone="sell">{b ? `${b.passed}/5` : "0/5"}</Badge>
                     )}
-                  </>
-                ) : (
-                  !r.error && <small>学習期間でプラスになる設定が見つかりませんでした</small>
-                )}
-                {r.current && (
-                  <small className="meta">
-                    いまの設定だと PF {r.current.pf}（{r.current.trades}回・{yen(r.current.net)}）
-                  </small>
-                )}
-              </div>
-            ))}
+                    {result.pick?.symbol === r.symbol && <Badge tone="brass">採用</Badge>}
+                    {r.stale && <Badge>古い結果</Badge>}
+                  </div>
+                  {b ? (
+                    <>
+                      <small>{b.label}</small>
+                      <ul className="checks">
+                        {CHECKS.map(([k, label]) => (
+                          <li key={k} className={b.checks[k] ? "ok" : "ng"}>
+                            <span className="mark" aria-hidden="true">
+                              {b.checks[k] ? "✓" : "✕"}
+                            </span>
+                            <span>
+                              {label}
+                              <small className="num">{checkValue(k, b)}</small>
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                      {!auto && b.pass && (
+                        <button
+                          type="button"
+                          className="ghost"
+                          onClick={() => onUse(r.symbol, b.params)}
+                        >
+                          この銘柄と設定を使う
+                        </button>
+                      )}
+                    </>
+                  ) : (
+                    !r.error && <small>前半60日でプラスになる設定が見つかりませんでした</small>
+                  )}
+                  {r.current && (
+                    <small className="meta">
+                      いまの設定だと PF {r.current.pf}（{r.current.trades}回・{yen(r.current.net)}）
+                    </small>
+                  )}
+                </div>
+              );
+            })}
           </div>
           <p className="hint">{result.note}</p>
         </>
@@ -263,7 +295,7 @@ function Backtest({ result, loading, onRun }) {
         <label>
           <span>期間</span>
           <select value={days} onChange={(e) => setDays(Number(e.target.value))}>
-            {[1, 3, 5, 10, 20].map((n) => (
+            {[5, 20, 60, 90].map((n) => (
               <option key={n} value={n}>
                 {n}日
               </option>
@@ -411,6 +443,7 @@ export default function Results(props) {
             onRun={props.onOptimize}
             onUse={props.onUseCombo}
             auto={props.snap?.config?.symbolMode === "auto"}
+            progress={props.optProgress}
           />
           <Backtest result={props.backtest} loading={props.loading} onRun={props.onBacktest} />
         </>

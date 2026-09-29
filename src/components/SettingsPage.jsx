@@ -139,7 +139,7 @@ export default function SettingsPage({ hasPosition, onSaved, onLogout }) {
             </p>
             <p className="hint">
               1日1回、全{data.symbols.length}
-              銘柄×約580通りの設定を過去20日で試します。前半14日で選んだ設定が、後半6日でも通用したものだけを採用します。合格がなければ新規エントリーを止めます。
+              銘柄×約580通りの設定を過去90日で試し、5段階の検証（未来を見ないテスト・ランダムな週・1000回の引き直し・悪条件・設定のブレ）をすべて通ったものだけを採用します。合格がなければ新規エントリーを止めます。
             </p>
             {form.autoBlocked && (
               <p className="notice soft">

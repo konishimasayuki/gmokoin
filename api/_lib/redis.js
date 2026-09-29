@@ -31,6 +31,7 @@ export const K = {
   backtestLast: "fxbot:backtest:last",
   btDay: (symbol, bd) => `fxbot:bt:${symbol}:${bd}`,
   optimizeLast: "fxbot:optimize:last",
+  optSymbol: (symbol) => `fxbot:opt:sym:${symbol}`,
   optimizeLock: "fxbot:lock:optimize",
 };
 

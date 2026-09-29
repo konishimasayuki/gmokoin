@@ -150,7 +150,8 @@ export function metricsOf(trades, cfg) {
 }
 
 // 設定1つ分のシミュレーション
-export function simulate(prep, cfg, { spread, conv, pip, digits, fromTs, toTs }) {
+// slip: 約定のズレ（価格）。エントリーと、利確以外の決済を不利な方向にずらす
+export function simulate(prep, cfg, { spread, conv, pip, digits, fromTs, toTs, slip = 0 }) {
   const { candles, ind1, m5, ind5, regime, htfDir1, htfDir5, map5, ses, bd } = prep;
   const tf = cfg.signalTf === 5 ? 5 : 1;
   const trades = [];
@@ -169,6 +170,7 @@ export function simulate(prep, cfg, { spread, conv, pip, digits, fromTs, toTs })
       const r = stepCandle(pos, c, spread);
       if (r.hit) {
         const dir = pos.side === "BUY" ? 1 : -1;
+        if (slip && r.hit.reason !== "利確") r.hit.exit -= dir * slip;
         const pips = round((dir * (r.hit.exit - pos.entry)) / pip, 1);
         const fee = cfg.feeOn ? cfg.feePerUnit * pos.units * 2 : 0;
         const net = round(pnlYen(pos.side, pos.entry, r.hit.exit, pos.units, conv) - fee, 0);
@@ -233,7 +235,7 @@ export function simulate(prep, cfg, { spread, conv, pip, digits, fromTs, toTs })
       htfDir: hd,
     });
     if (!sig) continue;
-    const entry = round(sig.side === "BUY" ? next.o + spread : next.o, digits);
+    const entry = round(sig.side === "BUY" ? next.o + spread + slip : next.o - slip, digits);
     const lv = slTp({ entry, side: sig.side, atr: a, cfg, pip, digits });
     const size = sizeUnits({ cfg, equity, slDist: lv.slDist, conv });
     if (!size.units) continue;

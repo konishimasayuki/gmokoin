@@ -64,6 +64,7 @@ export default function App() {
   const [reports, setReports] = useState([]);
   const [backtest, setBacktest] = useState(null);
   const [optimize, setOptimize] = useState(null);
+  const [optProgress, setOptProgress] = useState(null);
   const [lock, setLock] = useState(null);
   const [err, setErr] = useState("");
   const [toast, setToast] = useState("");
@@ -136,10 +137,21 @@ export default function App() {
     [runJob],
   );
 
+  // 銘柄ごとに順番に検証（1回のリクエストを短くしてタイムアウトを避ける）
   const runOptimize = useCallback(
     (apply) =>
       runJob("optimize", async () => {
-        const r = await api.post("/api/optimize", { apply });
+        const { symbols } = await api.get("/api/optimize");
+        for (let i = 0; i < symbols.length; i++) {
+          setOptProgress({ i: i + 1, total: symbols.length, symbol: symbols[i] });
+          try {
+            await api.post("/api/optimize", { action: "symbol", symbol: symbols[i] });
+          } catch (e) {
+            setErr(`${symbols[i]}の検証に失敗：${e.message}`);
+          }
+        }
+        setOptProgress(null);
+        const r = await api.post("/api/optimize", { action: "finalize", apply });
         setOptimize(r.result);
         const c = await api.get("/api/config");
         setSnap((s) => (s ? { ...s, config: c.config, optimizeStale: false } : s));
@@ -341,6 +353,7 @@ export default function App() {
             reports={reports}
             backtest={backtest}
             optimize={optimize}
+            optProgress={optProgress}
             onOptimize={() => runOptimize(snap?.config?.symbolMode === "auto")}
             onUseCombo={onUseCombo}
             loading={loading}
