@@ -27,6 +27,7 @@ GMOコイン「外国為替FX」のPublic API（認証不要）のリアル価�
 | `ANTHROPIC_API_KEY` | Claude APIキー |
 | `APP_PASSCODE` | ログイン用パスコード（任意の文字列） |
 | `CLAUDE_MODEL` | 任意。既定は `claude-sonnet-5-5` |
+| `ANTHROPIC_WORKSPACE_ID` | 任意。ワークスペースに紐づかないAPIキーを使う場合だけ、使うワークスペースのIDを指定 |
 
 4. 再デプロイし、パスコードでログインして「停止中」ボタンを押すと稼働します。
 

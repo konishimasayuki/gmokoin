@@ -59,16 +59,21 @@ async function askClaude(prompt) {
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) throw new Error("ANTHROPIC_API_KEY が未設定です");
   const model = process.env.CLAUDE_MODEL || "claude-sonnet-5-5";
+  const headers = {
+    "content-type": "application/json",
+    "x-api-key": key,
+    "anthropic-version": "2023-06-01",
+  };
+  // ワークスペースに紐づかないキーを使う場合のみ指定
+  if (process.env.ANTHROPIC_WORKSPACE_ID) {
+    headers["anthropic-workspace-id"] = process.env.ANTHROPIC_WORKSPACE_ID;
+  }
   const messages = [{ role: "user", content: prompt }];
   let data = null;
   for (let round_ = 0; round_ < 3; round_++) {
     const r = await fetch(API_URL, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": key,
-        "anthropic-version": "2023-06-01",
-      },
+      headers,
       body: JSON.stringify({
         model,
         max_tokens: 2500,
