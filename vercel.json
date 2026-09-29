@@ -1,0 +1,7 @@
+{
+  "regions": ["hnd1"],
+  "functions": {
+    "api/regime.js": { "maxDuration": 120 },
+    "api/tick.js": { "maxDuration": 20 }
+  }
+}
