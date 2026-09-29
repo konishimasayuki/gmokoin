@@ -11,6 +11,7 @@ import {
   maybeBreakEven,
   sessionAllowed,
   signalAt,
+  signalCandles,
   sizeUnits,
   slTp,
   stepCandle,
@@ -172,6 +173,8 @@ function evaluateEntry(x) {
   const pip = pipSize(cfg.symbol);
   const digits = priceDigits(cfg.symbol);
   if (t.status !== "OPEN") return no("市場クローズ中");
+  if (cfg.symbolMode === "auto" && cfg.autoBlocked)
+    return no("検証に合格した銘柄・設定がないため待機中（AIおまかせ）");
   const ses = sessionAllowed(now, cfg);
   if (!ses.ok)
     return no(
@@ -199,15 +202,16 @@ function evaluateEntry(x) {
     return no(`スプレッド拡大（${market.spreadPips}pips）`);
   if (cfg.rr < cfg.minRr) return no(`リスクリワード${cfg.rr}が下限${cfg.minRr}未満`);
 
+  const tf = cfg.signalTf === 5 ? 5 : 1;
   const L = candles.length - 1;
-  if (L < 60) return no("1分足データ不足");
+  if (L < 60) return no(`${tf}分足データ不足`);
   const aPips = ind.atr14[L] / pip;
   if (aPips < cfg.minAtrPips) return no(`値動きが小さい（ATR ${round(aPips, 1)}pips）`);
   if (aPips > cfg.maxAtrPips) return no(`値動きが荒い（ATR ${round(aPips, 1)}pips）`);
   const c = candles[L];
   if (lastSignal && Number(lastSignal) === c.t) return no("同じ足では再エントリーしない");
 
-  const htfDir = htfDirAt(htf, c.t + MIN);
+  const htfDir = htfDirAt(htf, c.t + tf * MIN);
   const sig = signalAt({
     mode: regime.mode,
     allow: regime.allow,
@@ -220,7 +224,9 @@ function evaluateEntry(x) {
   });
   if (!sig)
     return no(
-      cfg.htfFilter && htfDir === 0 ? "シグナル待ち（5分足の方向感なし）" : "シグナル待ち",
+      cfg.htfFilter && htfDir === 0
+        ? `シグナル待ち（${tf === 5 ? 15 : 5}分足の方向感なし）`
+        : "シグナル待ち",
       true,
     );
 
@@ -326,7 +332,10 @@ export async function runTick({ full = false } = {}) {
   };
   const candles = closedOnly(raw, "1min", now);
   const ind = computeScalpIndicators(candles);
-  const htf = buildHtf(candles);
+  const tf = cfg.signalTf === 5 ? 5 : 1;
+  const sigCandles = signalCandles(candles, tf, now);
+  const sigInd = tf === 5 ? computeScalpIndicators(sigCandles) : ind;
+  const htf = buildHtf(candles, tf === 5 ? 15 : 5);
   const fresh = regimeFreshness(regime, cfg, now);
   let daily = { ...EMPTY_DAILY, ...(dailyRaw || {}) };
   let stats = { ...EMPTY_STATS, ...(storedStats || {}) };
@@ -392,8 +401,8 @@ export async function runTick({ full = false } = {}) {
           cooldownActive: Boolean(cooldown) || Boolean(closed),
           pauseUntil: pausedUntil,
           lastSignal,
-          candles,
-          ind,
+          candles: sigCandles,
+          ind: sigInd,
           htf,
           now,
           equity: cfg.paperBalance + stats.net,
@@ -413,7 +422,7 @@ export async function runTick({ full = false } = {}) {
     decision = { state: "busy", text: "別の処理が実行中" };
   }
 
-  const L = candles.length - 1;
+  const SL = sigCandles.length - 1;
   const from = Math.max(0, candles.length - 90);
   const ses = sessionAllowed(now, cfg);
   const snap = {
@@ -426,6 +435,8 @@ export async function runTick({ full = false } = {}) {
     regimeStale: fresh.stale,
     briefStale: briefStale(brief, now),
     levelsStale: !levels || now - levels.at >= LEVELS_TTL_MS,
+    optimizeStale:
+      cfg.symbolMode === "auto" && (!cfg.autoPickAt || now - cfg.autoPickAt >= 24 * 3600 * 1000),
     position: withUnrealized(pos, t, cfg, conv),
     closed,
     daily,
@@ -437,11 +448,12 @@ export async function runTick({ full = false } = {}) {
     nearest: nearestLevels(levels, (t.bid + t.ask) / 2),
     decision,
     watch:
-      L >= 0
+      SL >= 0
         ? {
-            rsi7: ind.rsi7[L] === null ? null : round(ind.rsi7[L], 1),
-            atrPips: ind.atr14[L] === null ? null : round(ind.atr14[L] / pip, 2),
-            htfDir: htfDirAt(htf, candles[L].t + MIN),
+            tf,
+            rsi7: sigInd.rsi7[SL] === null ? null : round(sigInd.rsi7[SL], 1),
+            atrPips: sigInd.atr14[SL] === null ? null : round(sigInd.atr14[SL] / pip, 2),
+            htfDir: htfDirAt(htf, sigCandles[SL].t + tf * MIN),
           }
         : null,
     chart: {

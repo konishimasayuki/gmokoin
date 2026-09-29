@@ -66,7 +66,7 @@ export async function getCachedKlines(
   symbol,
   interval,
   now,
-  { ttlMs = 15000, days = 2, keep = 400 } = {},
+  { ttlMs = 15000, days = 2, keep = 900 } = {},
 ) {
   const key = K.klines(symbol, interval);
   const cached = await redis.get(key);

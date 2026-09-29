@@ -82,6 +82,7 @@ export default function Home({ snap, onClose, closing, onGo }) {
       <section className="quote">
         <div className="quote-top">
           <span className="sym">{symbolLabel(snap?.symbol)}</span>
+          {cfg?.symbolMode === "auto" && <Badge tone="brass">AIおまかせ</Badge>}
           <Badge tone={snap?.session?.ok ? "buy" : ""}>{snap?.session?.label || "—"}</Badge>
           {m?.status !== "OPEN" && m && <Badge tone="sell">クローズ中</Badge>}
         </div>
@@ -97,8 +98,11 @@ export default function Home({ snap, onClose, closing, onGo }) {
         </div>
         <div className="meta">
           スプレッド {m ? `${m.spreadPips}pips` : "—"}
+          {snap?.watch?.tf ? `・${snap.watch.tf}分足で判断` : ""}
           {snap?.watch?.atrPips != null ? `・ATR ${snap.watch.atrPips}pips` : ""}
-          {htf != null ? `・5分足 ${htf === 1 ? "上向き" : htf === -1 ? "下向き" : "横ばい"}` : ""}
+          {htf != null
+            ? `・${snap.watch.tf === 5 ? 15 : 5}分足 ${htf === 1 ? "上向き" : htf === -1 ? "下向き" : "横ばい"}`
+            : ""}
         </div>
       </section>
 

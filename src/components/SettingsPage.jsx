@@ -3,6 +3,18 @@ import { api } from "../api.js";
 import { symbolLabel } from "../format.js";
 import { Card, Toggle } from "./ui.jsx";
 
+// AIおまかせ中は自動で決まる項目
+const TUNED_FIELDS = new Set([
+  "slAtrMult",
+  "slMinPips",
+  "slMaxPips",
+  "rr",
+  "beTriggerR",
+  "timeStopMin",
+  "minAtrPips",
+  "maxAtrPips",
+]);
+
 const NUM_GROUPS = [
   {
     title: "資金と数量",
@@ -73,6 +85,7 @@ export default function SettingsPage({ hasPosition, onSaved, onLogout }) {
 
   if (!form) return <p className="hint">{msg || "読み込み中…"}</p>;
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  const auto = form.symbolMode === "auto";
   const setSes = (k, v) => setForm((f) => ({ ...f, sessions: { ...f.sessions, [k]: v } }));
 
   const save = async () => {
@@ -109,58 +122,113 @@ export default function SettingsPage({ hasPosition, onSaved, onLogout }) {
         </p>
       )}
 
-      <Card title="銘柄">
-        <select
-          value={form.symbol}
-          disabled={hasPosition}
-          onChange={(e) => set("symbol", e.target.value)}
-        >
-          {data.symbols.map((s) => (
-            <option key={s} value={s}>
-              {symbolLabel(s)}
-            </option>
-          ))}
-        </select>
-        {hasPosition && <p className="hint">ポジション保有中は変更できません。</p>}
+      <Card title="銘柄と売買ルールの決め方">
+        <div className="seg">
+          <button type="button" aria-selected={auto} onClick={() => set("symbolMode", "auto")}>
+            AIにおまかせ
+          </button>
+          <button type="button" aria-selected={!auto} onClick={() => set("symbolMode", "manual")}>
+            自分で決める
+          </button>
+        </div>
+        {auto ? (
+          <div className="auto-box">
+            <p>
+              いまの銘柄：<b>{symbolLabel(form.symbol)}</b>
+              {form.signalTf ? `・${form.signalTf}分足` : ""}
+            </p>
+            <p className="hint">
+              1日1回、全{data.symbols.length}
+              銘柄×約580通りの設定を過去20日で試します。前半14日で選んだ設定が、後半6日でも通用したものだけを採用します。合格がなければ新規エントリーを止めます。
+            </p>
+            {form.autoBlocked && (
+              <p className="notice soft">
+                前回の検証では合格がなかったため、いまは取引を止めています。
+              </p>
+            )}
+            <p className="meta">
+              {form.autoPickAt
+                ? `前回の選定：${new Date(form.autoPickAt).toLocaleString("ja-JP")}`
+                : "まだ選定していません（稼働中にすると自動で実行）"}
+            </p>
+          </div>
+        ) : (
+          <>
+            <select
+              value={form.symbol}
+              disabled={hasPosition}
+              onChange={(e) => set("symbol", e.target.value)}
+            >
+              {data.symbols.map((s) => (
+                <option key={s} value={s}>
+                  {symbolLabel(s)}
+                </option>
+              ))}
+            </select>
+            {hasPosition && <p className="hint">ポジション保有中は変更できません。</p>}
+            <div className="seg" style={{ marginTop: 8 }}>
+              <button
+                type="button"
+                aria-selected={Number(form.signalTf) !== 5}
+                onClick={() => set("signalTf", 1)}
+              >
+                1分足で判断
+              </button>
+              <button
+                type="button"
+                aria-selected={Number(form.signalTf) === 5}
+                onClick={() => set("signalTf", 5)}
+              >
+                5分足で判断
+              </button>
+            </div>
+          </>
+        )}
       </Card>
 
-      <Card title="取引する時間帯">
-        <Toggle
-          label="東京"
-          hint="9:00〜15:00"
-          checked={form.sessions.tokyo}
-          onChange={(v) => setSes("tokyo", v)}
-        />
-        <Toggle
-          label="ロンドン"
-          hint="16:00〜21:00"
-          checked={form.sessions.london}
-          onChange={(v) => setSes("london", v)}
-        />
-        <Toggle
-          label="ニューヨーク"
-          hint="21:00〜翌2:00"
-          checked={form.sessions.ny}
-          onChange={(v) => setSes("ny", v)}
-        />
-        <p className="hint">
-          早朝（2:00〜9:00）と15:00〜16:00は、スプレッドが広がりやすいので常に取引しません。
-        </p>
-      </Card>
+      {!auto && (
+        <Card title="取引する時間帯">
+          <Toggle
+            label="東京"
+            hint="9:00〜15:00"
+            checked={form.sessions.tokyo}
+            onChange={(v) => setSes("tokyo", v)}
+          />
+          <Toggle
+            label="ロンドン"
+            hint="16:00〜21:00"
+            checked={form.sessions.london}
+            onChange={(v) => setSes("london", v)}
+          />
+          <Toggle
+            label="ニューヨーク"
+            hint="21:00〜翌2:00"
+            checked={form.sessions.ny}
+            onChange={(v) => setSes("ny", v)}
+          />
+          <p className="hint">
+            早朝（2:00〜9:00）と15:00〜16:00は、スプレッドが広がりやすいので常に取引しません。
+          </p>
+        </Card>
+      )}
 
       <Card title="安全装置">
-        <Toggle
-          label="5分足フィルター"
-          hint="大きな流れと同じ向きのときだけ入る"
-          checked={form.htfFilter}
-          onChange={(v) => set("htfFilter", v)}
-        />
-        <Toggle
-          label="建値ストップ"
-          hint="含み益が出たら損切りを買値へ移す"
-          checked={form.beOn}
-          onChange={(v) => set("beOn", v)}
-        />
+        {!auto && (
+          <>
+            <Toggle
+              label="上位足フィルター"
+              hint="大きな流れと同じ向きのときだけ入る"
+              checked={form.htfFilter}
+              onChange={(v) => set("htfFilter", v)}
+            />
+            <Toggle
+              label="建値ストップ"
+              hint="含み益が出たら損切りを買値へ移す"
+              checked={form.beOn}
+              onChange={(v) => set("beOn", v)}
+            />
+          </>
+        )}
         <Toggle
           label="水平線フィルター"
           hint="利確までの間に強い線があれば見送る"
@@ -198,24 +266,29 @@ export default function SettingsPage({ hasPosition, onSaved, onLogout }) {
         </p>
       </Card>
 
-      {NUM_GROUPS.map((g) => (
-        <Card key={g.title} title={g.title}>
-          {g.fields
-            .filter(([, , , mode]) => !mode || mode === form.sizingMode)
-            .map(([k, label, step]) => (
-              <label className="field" key={k}>
-                <span>{label}</span>
-                <input
-                  type="number"
-                  inputMode="decimal"
-                  step={step}
-                  value={form[k]}
-                  onChange={(e) => set(k, e.target.value)}
-                />
-              </label>
-            ))}
-        </Card>
-      ))}
+      {NUM_GROUPS.map((g) => ({
+        ...g,
+        fields: g.fields.filter(([k]) => !(auto && TUNED_FIELDS.has(k))),
+      }))
+        .filter((g) => g.fields.length)
+        .map((g) => (
+          <Card key={g.title} title={g.title}>
+            {g.fields
+              .filter(([, , , mode]) => !mode || mode === form.sizingMode)
+              .map(([k, label, step]) => (
+                <label className="field" key={k}>
+                  <span>{label}</span>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    step={step}
+                    value={form[k]}
+                    onChange={(e) => set(k, e.target.value)}
+                  />
+                </label>
+              ))}
+          </Card>
+        ))}
 
       {msg && <p className="notice soft">{msg}</p>}
       <div className="save-bar">

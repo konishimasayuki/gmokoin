@@ -63,6 +63,7 @@ export default function App() {
   const [logs, setLogs] = useState([]);
   const [reports, setReports] = useState([]);
   const [backtest, setBacktest] = useState(null);
+  const [optimize, setOptimize] = useState(null);
   const [lock, setLock] = useState(null);
   const [err, setErr] = useState("");
   const [toast, setToast] = useState("");
@@ -76,7 +77,7 @@ export default function App() {
   });
   const tickSecRef = useRef(5);
   const busyRef = useRef({});
-  const autoRef = useRef({ brief: false, levels: false });
+  const autoRef = useRef({ brief: false, levels: false, optimize: false });
 
   const flash = (t) => {
     setToast(t);
@@ -135,6 +136,17 @@ export default function App() {
     [runJob],
   );
 
+  const runOptimize = useCallback(
+    (apply) =>
+      runJob("optimize", async () => {
+        const r = await api.post("/api/optimize", { apply });
+        setOptimize(r.result);
+        const c = await api.get("/api/config");
+        setSnap((s) => (s ? { ...s, config: c.config, optimizeStale: false } : s));
+      }),
+    [runJob],
+  );
+
   useEffect(() => {
     api
       .get("/api/login")
@@ -168,6 +180,10 @@ export default function App() {
               autoRef.current.levels = true;
               runLevels(false);
             }
+            if (s.optimizeStale && !s.position && !autoRef.current.optimize) {
+              autoRef.current.optimize = true;
+              runOptimize(true);
+            }
             if (s.regimeStale) runRegime(false);
           }
           n++;
@@ -188,7 +204,7 @@ export default function App() {
       clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVis);
     };
-  }, [authed, mergeSnap, runRegime, runBrief, runLevels]);
+  }, [authed, mergeSnap, runRegime, runBrief, runLevels, runOptimize]);
 
   useEffect(() => {
     if (!authed || tab !== "results") return;
@@ -199,6 +215,10 @@ export default function App() {
     api
       .get("/api/backtest")
       .then((r) => setBacktest(r.result))
+      .catch(() => {});
+    api
+      .get("/api/optimize")
+      .then((r) => setOptimize(r.result))
       .catch(() => {});
     api
       .get("/api/config")
@@ -257,6 +277,16 @@ export default function App() {
     }
   };
 
+  const onUseCombo = async (symbol, params) => {
+    try {
+      const out = await api.post("/api/config", { ...params, symbol });
+      setSnap((s) => (s ? { ...s, config: out.config } : s));
+      flash(`${symbol.replace("_", "/")}と検証済みの設定に切り替えました`);
+    } catch (e) {
+      setErr(e.message);
+    }
+  };
+
   const logout = async () => {
     await api.del("/api/login").catch(() => {});
     setAuthed(false);
@@ -310,6 +340,9 @@ export default function App() {
             logs={logs}
             reports={reports}
             backtest={backtest}
+            optimize={optimize}
+            onOptimize={() => runOptimize(snap?.config?.symbolMode === "auto")}
+            onUseCombo={onUseCombo}
             loading={loading}
             lock={lock}
             onReport={onReport}

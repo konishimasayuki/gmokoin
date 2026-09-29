@@ -1031,3 +1031,43 @@ h3 {
     animation: none;
   }
 }
+
+/* 自動選定 */
+.auto-box {
+  margin-top: 8px;
+}
+.auto-box p {
+  margin: 4px 0;
+}
+.opt-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+.opt {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: grid;
+  gap: 4px;
+}
+.opt.picked {
+  border-color: var(--brass);
+  box-shadow: inset 3px 0 0 var(--brass);
+}
+.opt-head {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.opt small {
+  font-size: 0.76rem;
+  color: var(--muted);
+}
+.opt-nums {
+  display: grid;
+  font-size: 0.95rem;
+}
+.opt .ghost {
+  justify-self: start;
+}

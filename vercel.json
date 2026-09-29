@@ -5,6 +5,7 @@
     "api/brief.js": { "maxDuration": 240 },
     "api/report.js": { "maxDuration": 180 },
     "api/backtest.js": { "maxDuration": 120 },
+    "api/optimize.js": { "maxDuration": 300 },
     "api/levels.js": { "maxDuration": 60 },
     "api/tick.js": { "maxDuration": 20 }
   }

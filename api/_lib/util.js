@@ -24,7 +24,7 @@ export const DEFAULT_CONFIG = {
   sessions: { tokyo: true, london: true, ny: true },
   htfFilter: true, // 5分足の向きと一致するときだけ
   beOn: true, // 建値ストップ
-  beTriggerR: 0.6, // 損切り幅の何倍の含み益で建値へ
+  beTriggerR: 1.0, // 損切り幅の何倍の含み益で建値へ
   lossStreakMax: 3, // 連敗ストップ
   lossStreakPauseMin: 60,
   levelFilter: true, // 利確までの間に水平線があれば見送り
@@ -33,9 +33,29 @@ export const DEFAULT_CONFIG = {
   riskPct: 0.5,
   maxUnits: 200000,
   minRr: 1.0,
+  signalTf: 1, // シグナルを見る足（1分 or 5分）
+  symbolMode: "auto", // auto=検証結果から自動で銘柄と設定を選ぶ / manual
+  autoBlocked: false, // 自動選定で合格がなかったとき true（新規エントリー停止）
+  autoPickAt: null,
 };
 
 export const BOOLEAN_KEYS = ["running", "feeOn", "htfFilter", "beOn", "levelFilter"];
+
+// 最適化で自動的に変える項目
+export const TUNED_KEYS = [
+  "signalTf",
+  "sessions",
+  "beOn",
+  "beTriggerR",
+  "rr",
+  "slAtrMult",
+  "slMinPips",
+  "slMaxPips",
+  "htfFilter",
+  "timeStopMin",
+  "minAtrPips",
+  "maxAtrPips",
+];
 
 // 増やすとリスクが上がる項目（損失中・連敗中はロック）
 export const RISK_UP_KEYS = [

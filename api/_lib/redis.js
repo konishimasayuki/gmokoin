@@ -30,6 +30,8 @@ export const K = {
   reportLock: "fxbot:lock:report",
   backtestLast: "fxbot:backtest:last",
   btDay: (symbol, bd) => `fxbot:bt:${symbol}:${bd}`,
+  optimizeLast: "fxbot:optimize:last",
+  optimizeLock: "fxbot:lock:optimize",
 };
 
 export async function addLog(msg, level = "info") {

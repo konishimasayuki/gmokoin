@@ -44,26 +44,34 @@ export function aggregate(candles, minutes) {
   return out;
 }
 
-// 上位足（5分足EMA20）の向き。確定済みの5分足だけを使う
-export function buildHtf(candles1m) {
-  const m5 = aggregate(candles1m, 5);
+// 上位足（EMA20）の向き。確定済みの足だけを使う。1分足シグナルなら5分足、5分足シグナルなら15分足
+export function buildHtf(candles1m, minutes = 5) {
+  const m5 = aggregate(candles1m, minutes);
   return {
     m5,
     e20: ema(
       m5.map((c) => c.c),
       20,
     ),
+    ms: minutes * MIN,
   };
+}
+
+// シグナル判定に使う足（確定済み）
+export function signalCandles(candles1m, tf, now) {
+  if (tf !== 5) return candles1m;
+  return aggregate(candles1m, 5).filter((c) => c.t + 5 * MIN <= now);
 }
 
 export function htfDirAt(htf, endTs) {
   const { m5, e20 } = htf;
+  const ms = htf.ms || 5 * MIN;
   let lo = 0;
   let hi = m5.length - 1;
   let idx = -1;
   while (lo <= hi) {
     const mid = (lo + hi) >> 1;
-    if (m5[mid].t + 5 * MIN <= endTs) {
+    if (m5[mid].t + ms <= endTs) {
       idx = mid;
       lo = mid + 1;
     } else hi = mid - 1;

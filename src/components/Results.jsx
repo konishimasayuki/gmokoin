@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { SIDE_JP, hm, mdhm, pips, tone, yen } from "../format.js";
+import { SIDE_JP, hm, mdhm, pips, symbolLabel, tone, yen } from "../format.js";
 import Spark from "./Spark.jsx";
 import { Badge, Card, Empty, Metric } from "./ui.jsx";
 
@@ -172,6 +172,84 @@ function Reports({ reports, loading, onReport, onAdopt, lock }) {
   );
 }
 
+function Optimize({ result, loading, onRun, onUse, auto }) {
+  return (
+    <Card title="AIによる銘柄・設定の自動選定">
+      <p className="hint">
+        全銘柄で約580通りの設定を試し、前半14日で選んだ設定が後半6日でも通用したか（PF1.1以上・プラス）を確認します。
+      </p>
+      <button type="button" className="primary" onClick={onRun} disabled={loading.optimize}>
+        {loading.optimize
+          ? "全銘柄を検証中…（1〜3分）"
+          : auto
+            ? "いま選び直す"
+            : "全銘柄で検証する"}
+      </button>
+      {result && (
+        <>
+          <p className="meta">
+            {mdhm(result.at)} 実行
+            {result.applied?.status === "applied" &&
+              `・${symbolLabel(result.applied.symbol)}に切り替えました`}
+            {result.applied?.status === "blocked" && "・合格なしのため取引を止めています"}
+            {result.applied?.status === "skipped" && `・${result.applied.why}`}
+          </p>
+          <div className="opt-list">
+            {result.results.map((r) => (
+              <div
+                key={r.symbol}
+                className={`opt ${result.pick?.symbol === r.symbol ? "picked" : ""}`}
+              >
+                <div className="opt-head">
+                  <b>{symbolLabel(r.symbol)}</b>
+                  {r.error ? (
+                    <Badge>{r.error}</Badge>
+                  ) : r.best?.pass ? (
+                    <Badge tone="buy">合格</Badge>
+                  ) : (
+                    <Badge tone="sell">不合格</Badge>
+                  )}
+                  {result.pick?.symbol === r.symbol && <Badge tone="brass">採用</Badge>}
+                </div>
+                {r.best ? (
+                  <>
+                    <small>{r.best.label}</small>
+                    <div className="opt-nums num">
+                      <span>
+                        学習 PF {r.best.train.pf}（{r.best.train.trades}回）
+                      </span>
+                      <span className={r.best.test.pf >= 1 ? "up" : "down"}>
+                        検証 PF {r.best.test.pf}（{r.best.test.trades}回・{yen(r.best.test.net)}）
+                      </span>
+                    </div>
+                    {!auto && r.best.pass && (
+                      <button
+                        type="button"
+                        className="ghost"
+                        onClick={() => onUse(r.symbol, r.best.params)}
+                      >
+                        この銘柄と設定を使う
+                      </button>
+                    )}
+                  </>
+                ) : (
+                  !r.error && <small>学習期間でプラスになる設定が見つかりませんでした</small>
+                )}
+                {r.current && (
+                  <small className="meta">
+                    いまの設定だと PF {r.current.pf}（{r.current.trades}回・{yen(r.current.net)}）
+                  </small>
+                )}
+              </div>
+            ))}
+          </div>
+          <p className="hint">{result.note}</p>
+        </>
+      )}
+    </Card>
+  );
+}
+
 function Backtest({ result, loading, onRun }) {
   const [days, setDays] = useState(5);
   const [spread, setSpread] = useState("");
@@ -288,7 +366,7 @@ const TABS = [
 ];
 
 export default function Results(props) {
-  const [tab, setTab] = useState("overall");
+  const [tab, setTab] = useState(props.initialTab || "overall");
   return (
     <>
       <div className="seg" role="tablist">
@@ -326,7 +404,16 @@ export default function Results(props) {
       )}
       {tab === "report" && <Reports {...props} />}
       {tab === "backtest" && (
-        <Backtest result={props.backtest} loading={props.loading} onRun={props.onBacktest} />
+        <>
+          <Optimize
+            result={props.optimize}
+            loading={props.loading}
+            onRun={props.onOptimize}
+            onUse={props.onUseCombo}
+            auto={props.snap?.config?.symbolMode === "auto"}
+          />
+          <Backtest result={props.backtest} loading={props.loading} onRun={props.onBacktest} />
+        </>
       )}
       {tab === "history" && <History trades={props.trades} logs={props.logs} />}
     </>
