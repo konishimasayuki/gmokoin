@@ -217,7 +217,9 @@ function exportText(result) {
       `■ ${symbolLabel(r.symbol)}${r.error ? `：${r.error}` : ""}${r.stale ? "（古い結果）" : ""}`,
     );
     if (r.error) continue;
-    out.push(` [スキャル] ${line(r.bestScalp || (r.best?.strategy !== "grid" ? r.best : null))}`);
+    out.push(
+      ` [スキャル] ${line(r.bestScalp !== undefined ? r.bestScalp : r.best?.strategy ? null : r.best)}`,
+    );
     out.push(` [リピート] ${line(r.bestGrid)}`);
     out.push(` [クロユキWW] ${line(r.bestWW)}`);
     if (r.current)

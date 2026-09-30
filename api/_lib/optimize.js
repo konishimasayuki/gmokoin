@@ -455,7 +455,9 @@ export async function finalizeOptimize({ apply = false, now = Date.now() } = {})
     r.at && now - r.at > RESULT_TTL ? { ...r, stale: true } : r,
   );
   // いま実際に動かせるのはスキャルピング。リピートは24時間稼働にしてから（検証結果は並べて表示）
-  const scalpOf = (r) => r.bestScalp || (r.best?.strategy !== "grid" ? r.best : null);
+  // 旧形式（手法の区別がない結果）だけ best をスキャルとして扱う
+  const scalpOf = (r) =>
+    r.bestScalp !== undefined ? r.bestScalp : r.best?.strategy ? null : r.best;
   const passing = results.filter((r) => !r.stale && scalpOf(r)?.pass);
   passing.sort(
     (a, b) => scalpOf(b).robust - scalpOf(a).robust || scalpOf(b).test.net - scalpOf(a).test.net,
