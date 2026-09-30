@@ -133,7 +133,45 @@ export function prepare(candles) {
     ses[i] = sessionOf(endTs);
     bd[i] = businessDate(endTs);
   }
-  return { candles, ind1, m5, ind5, regime, htfDir1, htfDir5, map5, ses, bd };
+  // リピート（グリッド）検証用：5分足ごとの営業日・時間帯・機械判定と、日ごとの高値安値
+  const m5bd = new Array(m5.length).fill(null);
+  const m5reg = new Array(m5.length).fill(null);
+  const m5ses = new Array(m5.length).fill(null);
+  for (let i = 0; i < n; i++) {
+    const k5 = map5[i];
+    if (k5 >= 0) {
+      m5bd[k5] = bd[i];
+      m5reg[k5] = regime[i];
+      m5ses[k5] = ses[i];
+    }
+  }
+  const days = [];
+  for (let k5 = 0; k5 < m5.length; k5++) {
+    const d = m5bd[k5];
+    if (!d) continue;
+    const last = days[days.length - 1];
+    if (!last || last.bd !== d) days.push({ bd: d, hi: m5[k5].h, lo: m5[k5].l, start: k5 });
+    else {
+      last.hi = Math.max(last.hi, m5[k5].h);
+      last.lo = Math.min(last.lo, m5[k5].l);
+    }
+  }
+  return {
+    candles,
+    ind1,
+    m5,
+    ind5,
+    regime,
+    htfDir1,
+    htfDir5,
+    map5,
+    ses,
+    bd,
+    m5bd,
+    m5reg,
+    m5ses,
+    days,
+  };
 }
 
 export function metricsOf(trades, cfg) {

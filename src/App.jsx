@@ -205,8 +205,9 @@ export default function App() {
           mergeSnap(s);
           setErr("");
           tickSecRef.current = s.config?.tickSec || 5;
+          const useAi = s.config?.aiMode === "claude";
           if (s.config?.running) {
-            if (s.briefStale && !autoRef.current.brief) {
+            if (useAi && s.briefStale && !autoRef.current.brief) {
               autoRef.current.brief = true;
               runBrief(false);
             }
@@ -218,7 +219,7 @@ export default function App() {
               autoRef.current.optimize = true;
               runOptimize(true);
             }
-            if (s.regimeStale) runRegime(false);
+            if (useAi && s.regimeStale) runRegime(false);
           }
           n++;
         }
@@ -267,7 +268,7 @@ export default function App() {
       setSnap((s) => ({ ...s, config: out.config }));
       if (out.config.running) {
         flash("自動売買を開始しました");
-        if (!snap.regime || snap.regimeStale) runRegime(false);
+        if (out.config.aiMode === "claude" && (!snap.regime || snap.regimeStale)) runRegime(false);
       } else flash("自動売買を停止しました");
     } catch (e) {
       setErr(e.message);

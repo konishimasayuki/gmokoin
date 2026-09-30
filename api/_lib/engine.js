@@ -7,9 +7,11 @@ import { K, acquireLock, addLog, getLogs, getTrades, redis } from "./redis.js";
 import {
   SESSION_LABEL,
   buildHtf,
+  buildMechanicalRegime,
   htfDirAt,
   levelInPath,
   maybeBreakEven,
+  mechanicalRegimeAt,
   sessionAllowed,
   signalAt,
   signalCandles,
@@ -414,9 +416,20 @@ export async function runTick({ full = false, focus = null } = {}) {
     K.lastSignalOf(s),
     K.levels(s),
   ]);
-  const [tickers, klines, perVals, extra] = await Promise.all([
+  const rulesMode = cfg.aiMode !== "claude";
+  const [tickers, klines, hourly, perVals, extra] = await Promise.all([
     symbols.length ? fetchTickers(symbols) : Promise.resolve({}),
     Promise.all(symbols.map((s) => getCachedKlines(s, "1min", now).catch(() => []))),
+    // ルール判定用の1時間足（5分キャッシュ）
+    rulesMode
+      ? Promise.all(
+          symbols.map((s) =>
+            getCachedKlines(s, "1hour", now, { ttlMs: 5 * MIN, days: 4, keep: 120 }).catch(
+              () => [],
+            ),
+          ),
+        )
+      : Promise.resolve([]),
     perKeys.length ? redis.mget(...perKeys) : Promise.resolve([]),
     redis.mget(K.daily(bd), K.brief("ALL", bd)),
   ]);
@@ -427,7 +440,28 @@ export async function runTick({ full = false, focus = null } = {}) {
     streak: streakRaw || { losses: 0 },
     pauseUntil: Number(pauseUntil) || null,
   };
-  const fresh = regimeFreshness(regime, cfg, now);
+  // ルールモード：Claudeの代わりに1時間足の移動平均で方針を決める（検証と同じ判定）
+  let effRegime = regime;
+  if (rulesMode) {
+    effRegime = {
+      at: now,
+      rules: true,
+      summary: "ルール判定（1時間足の移動平均。Claudeは使っていません）",
+      events: [],
+      symbols: {},
+    };
+    symbols.forEach((s, i) => {
+      const h1 = closedOnly(hourly[i] || [], "1hour", now);
+      const m = mechanicalRegimeAt(buildMechanicalRegime(h1), now);
+      effRegime.symbols[s] = {
+        ...m,
+        confidence: m.mode === "NO_TRADE" ? 0 : 60,
+        summary: "",
+        events: [],
+      };
+    });
+  }
+  const fresh = rulesMode ? { stale: false, expired: false } : regimeFreshness(regime, cfg, now);
 
   // 銘柄ごとの下ごしらえ
   const st = symbols.map((symbol, i) => {
@@ -458,7 +492,7 @@ export async function runTick({ full = false, focus = null } = {}) {
       cooldown: perVals[i * 4 + 1],
       lastSignal: perVals[i * 4 + 2],
       levels: perVals[i * 4 + 3],
-      r: regimeOf(regime, symbol),
+      r: regimeOf(effRegime, symbol),
       closed: null,
       decision: null,
     };
@@ -529,7 +563,7 @@ export async function runTick({ full = false, focus = null } = {}) {
           r: x.r,
           fresh,
           brief,
-          regime,
+          regime: effRegime,
           levels: x.levels,
           t: x.t,
           market,
@@ -620,13 +654,15 @@ export async function runTick({ full = false, focus = null } = {}) {
   const snap = {
     now,
     config: cfg,
-    regime,
+    regime: effRegime,
     regimeStale: fresh.stale,
-    briefStale: briefStale(
-      brief,
-      now,
-      items.map((i) => i.symbol),
-    ),
+    briefStale:
+      !rulesMode &&
+      briefStale(
+        brief,
+        now,
+        items.map((i) => i.symbol),
+      ),
     levelsStale: st.some((x) => x.inPortfolio && (!x.levels || now - x.levels.at >= LEVELS_TTL_MS)),
     optimizeStale:
       cfg.symbolMode === "auto" && (!cfg.autoPickAt || now - cfg.autoPickAt >= 24 * 3600 * 1000),

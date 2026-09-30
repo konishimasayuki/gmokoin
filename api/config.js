@@ -41,6 +41,7 @@ export default async function handler(req, res) {
     if (["fixed", "risk"].includes(body.sizingMode)) next.sizingMode = body.sizingMode;
     if ([1, 5].includes(Number(body.signalTf))) next.signalTf = Number(body.signalTf);
     if (["auto", "manual"].includes(body.symbolMode)) next.symbolMode = body.symbolMode;
+    if (["rules", "claude"].includes(body.aiMode)) next.aiMode = body.aiMode;
     if (next.symbolMode === "manual") next.autoBlocked = false;
 
     // 損失中・連敗中はリスクを増やす変更をロック（感情で設定をいじる事故を防ぐ）

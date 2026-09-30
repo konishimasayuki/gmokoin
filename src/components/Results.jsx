@@ -178,7 +178,10 @@ const CHECKS = [
   ["mc", "1000回の引き直しで、マイナスの確率が25%以下か"],
   ["stress", "スプレッド2倍＋約定のズレでも負けないか"],
   ["neighbors", "設定を少しズラしても勝てるか"],
+  ["dd", "含み損込みの最大ドローダウンが資金の30%以下か"],
 ];
+
+const STRAT = { scalp: "スキャル", grid: "リピート" };
 
 function checkValue(key, b) {
   if (key === "split") return `後半 PF ${b.test.pf}（${b.test.trades}回・${yen(b.test.net)}）`;
@@ -187,7 +190,8 @@ function checkValue(key, b) {
   if (key === "mc")
     return `マイナス確率 ${Math.round(b.mc.lossProb * 100)}%・最悪時 -${b.mc.dd95.toLocaleString("ja-JP")}円`;
   if (key === "stress") return `PF ${b.stress.pf}（${yen(b.stress.net)}）`;
-  return `${b.neighbors.total}通り中 ${b.neighbors.ok}通りでプラス`;
+  if (key === "neighbors") return `${b.neighbors.total}通り中 ${b.neighbors.ok}通りでプラス`;
+  return `最大 -${(b.full?.mtmDd ?? b.full?.maxDd ?? 0).toLocaleString("ja-JP")}円`;
 }
 
 function Optimize({ result: raw, loading, onRun, onUse, auto, progress }) {
@@ -200,7 +204,7 @@ function Optimize({ result: raw, loading, onRun, onUse, auto, progress }) {
   return (
     <Card title="AIによる銘柄・設定の自動選定">
       <p className="hint">
-        FX6銘柄と仮想通貨5銘柄で、それぞれ約580通りの設定を90日分のデータで試し、5段階の検証をすべて通ったものだけを採用します。ランダムな週と引き直しは日替わりです。
+        FX6銘柄と仮想通貨5銘柄で、スキャルピング約580通り＋リピート72通りの設定を90日分のデータで試し、6段階の検証をすべて通ったものだけを採用します。ランダムな週と引き直しは日替わりです。
       </p>
       <button type="button" className="primary" onClick={onRun} disabled={loading.optimize}>
         {loading.optimize ? "検証中…" : auto ? "いま選び直す" : "全銘柄で検証する"}
@@ -246,9 +250,36 @@ function Optimize({ result: raw, loading, onRun, onUse, auto, progress }) {
               <Spark points={result.combined.curve} height={90} />
             </div>
           )}
+          {result.combinedGrid && (
+            <div className="port-box grid-box">
+              <b>リピートで合格：{result.gridSymbols.map((x) => symbolLabel(x)).join("・")}</b>
+              <small>組み合わせた場合の{result.totalDays}日間（概算・24時間稼働が前提）</small>
+              <div className="metrics">
+                <Metric
+                  label="損益"
+                  value={yen(result.combinedGrid.net)}
+                  tone={tone(result.combinedGrid.net)}
+                  sub={`${result.combinedGrid.trades}回`}
+                />
+                <Metric
+                  label="PF"
+                  value={result.combinedGrid.pf}
+                  sub={`勝率${result.combinedGrid.winRate}%`}
+                />
+                <Metric
+                  label="最大DD"
+                  value={`${result.combinedGrid.maxDd.toLocaleString("ja-JP")}円`}
+                  sub={`マイナス確率${Math.round(result.combinedGrid.mc.lossProb * 100)}%`}
+                />
+              </div>
+              <Spark points={result.combinedGrid.curve} height={90} />
+            </div>
+          )}
           <div className="opt-list">
             {result.results.map((r) => {
               const b = r.best?.checks ? r.best : null;
+              const alt = b?.strategy === "grid" ? r.bestScalp : r.bestGrid;
+              const other = alt?.checks ? alt : null;
               return (
                 <div key={r.symbol} className={`opt ${inPort(r.symbol) ? "picked" : ""}`}>
                   <div className="opt-head">
@@ -258,8 +289,11 @@ function Optimize({ result: raw, loading, onRun, onUse, auto, progress }) {
                     ) : b?.pass ? (
                       <Badge tone="buy">合格</Badge>
                     ) : (
-                      <Badge tone="sell">{b ? `${b.passed}/5` : "0/5"}</Badge>
+                      <Badge tone="sell">
+                        {b ? `${b.passed}/${Object.keys(b.checks).length}` : "不合格"}
+                      </Badge>
                     )}
+                    {b && <Badge>{STRAT[b.strategy] || "スキャル"}</Badge>}
                     {inPort(r.symbol) && <Badge tone="brass">採用</Badge>}
                     {r.stale && <Badge>古い結果</Badge>}
                   </div>
@@ -267,7 +301,7 @@ function Optimize({ result: raw, loading, onRun, onUse, auto, progress }) {
                     <>
                       <small>{b.label}</small>
                       <ul className="checks">
-                        {CHECKS.map(([k, label]) => (
+                        {CHECKS.filter(([k]) => k in b.checks).map(([k, label]) => (
                           <li key={k} className={b.checks[k] ? "ok" : "ng"}>
                             <span className="mark" aria-hidden="true">
                               {b.checks[k] ? "✓" : "✕"}
@@ -279,7 +313,19 @@ function Optimize({ result: raw, loading, onRun, onUse, auto, progress }) {
                           </li>
                         ))}
                       </ul>
-                      {!auto && b.pass && (
+                      {other && (
+                        <small className="meta">
+                          もう一方（{STRAT[other.strategy]}）：{other.passed}/
+                          {Object.keys(other.checks).length}
+                          ・後半 PF {other.test.pf}（{yen(other.test.net)}）
+                        </small>
+                      )}
+                      {b.strategy === "grid" && b.pass && (
+                        <small className="meta">
+                          リピートは24時間稼働にしてから運用できます（今は検証のみ）。
+                        </small>
+                      )}
+                      {!auto && b.pass && b.strategy !== "grid" && (
                         <button
                           type="button"
                           className="ghost"

@@ -53,6 +53,7 @@ export const DEFAULT_CONFIG = {
   autoPickAt: null,
   // ポートフォリオ（AIおまかせ時に、合格した銘柄と各銘柄の設定が入る）
   portfolio: [],
+  aiMode: "rules", // rules=ルールだけで方針を決める（Claude不要・無料） / claude=AIチームが方針を決める
   maxSymbols: 5, // 採用する銘柄数の上限
   maxPositions: 3, // 同時に持つポジション数の上限
   maxSameCurrency: 2, // 同じ通貨を同じ向きに持つ数の上限（円売りが重なりすぎないように）

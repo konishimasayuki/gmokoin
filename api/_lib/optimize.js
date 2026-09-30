@@ -13,6 +13,7 @@ import {
   prepare,
   simulate,
 } from "./backtest.js";
+import { simulateGrid } from "./grid.js";
 import { K, acquireLock, addLog, redis } from "./redis.js";
 import {
   ASSET_DEFAULTS,
@@ -41,6 +42,7 @@ export const PASS_RULE = {
   mcLoss: 0.25,
   stressPf: 1.0,
   neighbors: 4,
+  ddCapPct: 30, // 含み損込みの最大ドローダウンが資金の30%以下
 };
 
 const S = (tokyo, london, ny, other = false) => ({ tokyo, london, ny, other });
@@ -104,6 +106,10 @@ function grid(symbol) {
 }
 
 export function describe(p) {
+  if (p.strategy === "grid") {
+    const d = { long: "買い", short: "売り", auto: "買い/売り自動" }[p.dir];
+    return `リピート${d}・過去${p.lookbackDays}日のレンジを${p.levels}分割・${p.tpSteps}マスで利確・想定外で全決済・最大損失 資金の${p.riskPct}%`;
+  }
   const x = p.sessions;
   const ses =
     x.tokyo && x.london && x.ny && x.other
@@ -194,6 +200,37 @@ function neighborsOf(p) {
   ].filter((x) => x.rr >= 0.5 && x.slAtrMult >= 0.5);
 }
 
+// リピート（グリッド）戦略の候補
+function gridCombos() {
+  const out = [];
+  for (const lookbackDays of [5, 10, 20])
+    for (const levels of [6, 10])
+      for (const tpSteps of [1, 2])
+        for (const dir of ["long", "short", "auto"])
+          for (const riskPct of [5, 10])
+            out.push({
+              strategy: "grid",
+              lookbackDays,
+              levels,
+              tpSteps,
+              dir,
+              stopSteps: 1,
+              riskPct,
+            });
+  return out;
+}
+
+function gridNeighbors(p) {
+  return [
+    { ...p, levels: p.levels + 2 },
+    { ...p, levels: Math.max(3, p.levels - 2) },
+    { ...p, lookbackDays: Math.round(p.lookbackDays * 1.5) },
+    { ...p, lookbackDays: Math.max(3, Math.round(p.lookbackDays * 0.7)) },
+    { ...p, riskPct: round(p.riskPct * 1.3, 1) },
+    { ...p, riskPct: round(p.riskPct * 0.7, 1) },
+  ];
+}
+
 export async function optimizeSymbol(symbol, { now = Date.now() } = {}) {
   const ok = await acquireLock(`${K.optimizeLock}:${symbol}`, 290);
   if (!ok) throw new Error(`${symbol}は検証中です`);
@@ -219,31 +256,45 @@ export async function optimizeSymbol(symbol, { now = Date.now() } = {}) {
     const fromTs = Math.max(now - TOTAL_DAYS * DAY, candles[60].t);
     const testFrom = now - TEST_DAYS * DAY;
     const env = { spread, conv, pip, digits, symbol };
-    const sim = (cfg, a, b, extra = {}) =>
-      simulate(prep, cfg, { ...env, fromTs: a, toTs: b, ...extra });
+    const ddCap = (base.paperBalance * PASS_RULE.ddCapPct) / 100;
 
-    // 1. 前半で選ぶ
-    const scored = [];
-    const combos = grid(symbol);
-    for (const p of combos) {
+    // 手法ごとの実行（trades と 含み損込みの最大DD を返す）
+    const run = (p, a, b, extra = {}) => {
+      if (p.strategy === "grid")
+        return simulateGrid(prep, p, { ...env, cfg: base, fromTs: a, toTs: b, ...extra });
       const cfg = { ...base, ...p };
-      const m = metricsOf(sim(cfg, fromTs, testFrom), cfg);
-      const s = score(m);
-      if (s > 0) scored.push({ p, train: m, s });
-    }
-    scored.sort((a, b) => b.s - a.s);
+      const trades = simulate(prep, cfg, { ...env, fromTs: a, toTs: b, ...extra });
+      return { trades, mtmDd: metricsOf(trades, cfg).maxDd };
+    };
+    const metrics = (p, a, b, extra) => {
+      const r = run(p, a, b, extra);
+      return { ...metricsOf(r.trades, base), mtmDd: r.mtmDd };
+    };
+
+    // 1. 前半60日で候補を選ぶ（手法ごとに上位を残す）
+    const pick = (combos, n) => {
+      const scored = [];
+      for (const p of combos) {
+        const m = metrics(p, fromTs, testFrom);
+        const s = score(m);
+        if (s > 0) scored.push({ p, train: m, s });
+      }
+      scored.sort((a, b) => b.s - a.s);
+      return { top: scored.slice(0, n), positive: scored.length, tested: combos.length };
+    };
+    const scalpPick = pick(grid(symbol), 8);
+    const gridPick = pick(gridCombos(), 5);
 
     const rng = rngOf(`${businessDate(now)}:${symbol}`);
-    const candidates = scored.slice(0, 10).map(({ p, train }) => {
-      const cfg = { ...base, ...p };
-      const test = metricsOf(sim(cfg, testFrom, now), cfg);
-      const fullTrades = sim(cfg, fromTs, now);
-      const full = metricsOf(fullTrades, cfg);
-      const weeks = randomWeeks(fullTrades, fromTs, now, rng);
-      const mc = monteCarlo(fullTrades, rng);
-      const stress = metricsOf(sim(cfg, fromTs, now, { spread: spread * 2, slip }), cfg);
-      const nb = neighborsOf(p).map((q) =>
-        metricsOf(sim({ ...base, ...q }, fromTs, now), { ...base, ...q }),
+    const evaluate = ({ p, train }) => {
+      const test = metrics(p, testFrom, now);
+      const fullRun = run(p, fromTs, now);
+      const full = { ...metricsOf(fullRun.trades, base), mtmDd: fullRun.mtmDd };
+      const weeks = randomWeeks(fullRun.trades, fromTs, now, rng);
+      const mc = monteCarlo(fullRun.trades, rng);
+      const stress = metrics(p, fromTs, now, { spread: spread * 2, slip });
+      const nb = (p.strategy === "grid" ? gridNeighbors(p) : neighborsOf(p)).map((q) =>
+        metrics(q, fromTs, now),
       );
       const nbOk = nb.filter((m) => m.pf >= 1.0 && m.net > 0).length;
       const checks = {
@@ -256,47 +307,52 @@ export async function optimizeSymbol(symbol, { now = Date.now() } = {}) {
         mc: mc.lossProb <= PASS_RULE.mcLoss,
         stress: stress.pf >= PASS_RULE.stressPf && stress.net > 0,
         neighbors: nbOk >= Math.min(PASS_RULE.neighbors, nb.length),
+        dd: full.mtmDd <= ddCap,
       };
       const passed = Object.values(checks).filter(Boolean).length;
       return {
+        strategy: p.strategy === "grid" ? "grid" : "scalp",
         params: p,
         label: describe(p),
         train,
         test,
         full,
-        // ポートフォリオ全体の成績を出すための損益の並び [決済時刻, 損益]
-        nets: fullTrades.slice(-1500).map((t) => [t.closedAt, t.net]),
+        nets: fullRun.trades.slice(-1500).map((t) => [t.closedAt, t.net]),
         weeks,
         mc,
         stress,
         neighbors: { ok: nbOk, total: nb.length },
         checks,
         passed,
-        pass: passed === 5,
+        pass: passed === 6,
         robust: round(Math.min(train.pf, test.pf, stress.pf) * (1 - mc.lossProb), 3),
       };
-    });
-    candidates.sort(
-      (a, b) => Number(b.pass) - Number(a.pass) || b.passed - a.passed || b.robust - a.robust,
-    );
-    const current = metricsOf(sim(base, fromTs, now), base);
+    };
+    const order = (a, b) =>
+      Number(b.pass) - Number(a.pass) || b.passed - a.passed || b.robust - a.robust;
+    const scalpC = scalpPick.top.map(evaluate).sort(order);
+    const gridC = gridPick.top.map(evaluate).sort(order);
+    const bestScalp = scalpC[0] || null;
+    const bestGrid = gridC[0] || null;
+    const best = [bestScalp, bestGrid].filter(Boolean).sort(order)[0] || null;
+    const current = metricsOf(run(base, fromTs, now).trades, base);
+    const slim = (c) => (c ? { ...c, nets: undefined } : null);
     const result = {
       symbol,
       at: now,
       days: round((now - fromTs) / DAY, 0),
       spreadPips: round(spread / pip, 2),
-      tested: combos.length,
+      tested: scalpPick.tested + gridPick.tested,
       unit: isCrypto(symbol) ? "bp" : "pips",
       kind: isCrypto(symbol) ? "crypto" : "fx",
-      positiveTrain: scored.length,
-      best: candidates[0] || null,
-      others: candidates
-        .slice(1, 3)
-        .map((c) => ({ label: c.label, passed: c.passed, test: c.test })),
+      positiveTrain: scalpPick.positive + gridPick.positive,
+      best: slim(best),
+      bestScalp,
+      bestGrid,
       current,
     };
     await redis.set(K.optSymbol(symbol), result, { ex: 60 * 60 * 24 * 3 });
-    return result;
+    return { ...result, bestScalp: slim(bestScalp), bestGrid: slim(bestGrid) };
   } finally {
     await redis.del(`${K.optimizeLock}:${symbol}`);
   }
@@ -346,17 +402,38 @@ export async function finalizeOptimize({ apply = false, now = Date.now() } = {})
   const results = SYMBOLS.map((s, i) => rows[i] || { symbol: s, error: "未検証" }).map((r) =>
     r.at && now - r.at > RESULT_TTL ? { ...r, stale: true } : r,
   );
-  const passing = results.filter((r) => !r.stale && r.best?.pass);
-  passing.sort((a, b) => b.best.robust - a.best.robust || b.best.test.net - a.best.test.net);
+  // いま実際に動かせるのはスキャルピング。リピートは24時間稼働にしてから（検証結果は並べて表示）
+  const scalpOf = (r) => r.bestScalp || (r.best?.strategy !== "grid" ? r.best : null);
+  const passing = results.filter((r) => !r.stale && scalpOf(r)?.pass);
+  passing.sort(
+    (a, b) => scalpOf(b).robust - scalpOf(a).robust || scalpOf(b).test.net - scalpOf(a).test.net,
+  );
   const chosen = passing.slice(0, cfg.maxSymbols);
-  const portfolio = chosen.map((r) => ({
-    symbol: r.symbol,
-    params: r.best.params,
-    label: r.best.label,
-    robust: r.best.robust,
-    test: { pf: r.best.test.pf, net: r.best.test.net, trades: r.best.test.trades },
-  }));
-  const combined = chosen.length ? combine(chosen, rngOf(`${businessDate(now)}:portfolio`)) : null;
+  const portfolio = chosen.map((r) => {
+    const b = scalpOf(r);
+    return {
+      symbol: r.symbol,
+      params: b.params,
+      label: b.label,
+      robust: b.robust,
+      test: { pf: b.test.pf, net: b.test.net, trades: b.test.trades },
+    };
+  });
+  const combined = chosen.length
+    ? combine(
+        chosen.map((r) => ({ best: scalpOf(r) })),
+        rngOf(`${businessDate(now)}:portfolio`),
+      )
+    : null;
+  const gridPassing = results.filter((r) => !r.stale && r.bestGrid?.pass);
+  gridPassing.sort((a, b) => b.bestGrid.robust - a.bestGrid.robust);
+  const gridChosen = gridPassing.slice(0, cfg.maxSymbols);
+  const combinedGrid = gridChosen.length
+    ? combine(
+        gridChosen.map((r) => ({ best: r.bestGrid })),
+        rngOf(`${businessDate(now)}:grid`),
+      )
+    : null;
 
   let applied = null;
   if (apply && cfg.symbolMode === "auto") {
@@ -389,9 +466,16 @@ export async function finalizeOptimize({ apply = false, now = Date.now() } = {})
     totalDays: TOTAL_DAYS,
     testDays: TEST_DAYS,
     rule: PASS_RULE,
-    results: results.map((r) => (r.best ? { ...r, best: { ...r.best, nets: undefined } } : r)),
+    results: results.map((r) => ({
+      ...r,
+      best: r.best ? { ...r.best, nets: undefined } : r.best,
+      bestScalp: r.bestScalp ? { ...r.bestScalp, nets: undefined } : r.bestScalp,
+      bestGrid: r.bestGrid ? { ...r.bestGrid, nets: undefined } : r.bestGrid,
+    })),
     portfolio,
     combined,
+    gridSymbols: gridChosen.map((r) => r.symbol),
+    combinedGrid,
     pick: portfolio[0] ? { symbol: portfolio[0].symbol } : null,
     applied,
     note: "相場判定はClaudeではなく1時間足の機械判定で代用。組み合わせの成績は、同時に持てる数の制限を考えない概算です。ランダム検証は日替わりです。",

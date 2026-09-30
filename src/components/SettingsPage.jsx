@@ -245,6 +245,30 @@ export default function SettingsPage({ hasPosition, onSaved, onLogout }) {
         </Card>
       )}
 
+      <Card title="相場の方針を決める方法">
+        <div className="seg">
+          <button
+            type="button"
+            aria-selected={form.aiMode !== "claude"}
+            onClick={() => set("aiMode", "rules")}
+          >
+            ルールだけ（無料）
+          </button>
+          <button
+            type="button"
+            aria-selected={form.aiMode === "claude"}
+            onClick={() => set("aiMode", "claude")}
+          >
+            AIチーム（Claude）
+          </button>
+        </div>
+        <p className="hint">
+          {form.aiMode === "claude"
+            ? "議長・反論役・ファンダ担当が方針を決めます。Claude APIの料金がかかります（APIキーの設定が必要）。"
+            : "1時間足の移動平均で上昇・下降・レンジを判定します。検証と同じ判定なので、検証結果に一番近い動きになります。Claudeは使わないので無料です。"}
+        </p>
+      </Card>
+
       <Card title="安全装置">
         {!auto && (
           <>
