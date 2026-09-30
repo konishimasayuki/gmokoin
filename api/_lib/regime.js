@@ -1,3 +1,4 @@
+import { MODELS, getBrain, modelOf } from "./brains.js";
 // 相場判定：監視中の全銘柄を、議長1回・反論役1回でまとめて判定する（APIの呼び出し回数を増やさない）
 import { briefText } from "./brief.js";
 import { arr, askClaude } from "./claude.js";
@@ -211,7 +212,9 @@ ${blocks.join("\n\n")}`;
 # 出力（JSONのみ）
 ${shape}`;
 
+    const cModel = modelOf(cfg, "ai_committee").id;
     const chairRes = await askClaude({
+      model: cModel,
       system: CHAIR_SYSTEM,
       prompt: chairPrompt,
       searches: brief ? 2 : 4,
@@ -264,6 +267,7 @@ ${JSON.stringify(view, null, 1)}
         )
         .join(",")}}}`;
       const criticRes = await askClaude({
+        model: cModel,
         system: CRITIC_SYSTEM,
         prompt: criticPrompt,
         maxTokens: 600 + 400 * active.length,
@@ -282,6 +286,7 @@ ${JSON.stringify(view, null, 1)}
       symbols: out,
     };
     await redis.set(K.regime, regime);
+    await logJudgment("ai_committee", regime);
     const go = live.filter((s) => out[s].mode !== "NO_TRADE");
     await addLog(
       `AI判定：${go.length ? go.map((s) => `${s.replace("_", "/")} ${MODE_JP[out[s].mode]}(${out[s].confidence}%)`).join("、") : "全銘柄見送り"}`,
@@ -305,3 +310,162 @@ ${JSON.stringify(view, null, 1)}
     await redis.del(K.regimeLock);
   }
 }
+
+// 判断の記録（脳ごとに直近30件）
+async function logJudgment(id, regime) {
+  const entry = {
+    at: regime.at,
+    summary: regime.summary || "",
+    symbols: Object.fromEntries(
+      Object.entries(regime.symbols || {}).map(([k, v]) => [
+        k,
+        {
+          mode: v.mode,
+          allow: v.allow,
+          confidence: v.confidence,
+          summary: v.summary,
+          critic: v.critic?.verdict || null,
+        },
+      ]),
+    ),
+  };
+  await redis.pipeline().lpush(K.brainLog(id), entry).ltrim(K.brainLog(id), 0, 29).exec();
+}
+
+// 銘柄データをまとめて取得してプロンプト用の文章にする
+async function gather(symbols, now) {
+  const bd = businessDate(now);
+  const [tickers, brief, ...per] = await Promise.all([
+    fetchTickersFor(symbols),
+    redis.get(K.brief("ALL", bd)),
+    ...symbols.map((s) =>
+      Promise.all([
+        getRecentKlines(s, "5min", now, 2),
+        getRecentKlines(s, "1hour", now, 4),
+        ensureLevels(s).catch(() => null),
+      ]),
+    ),
+  ]);
+  const blocks = [];
+  const live = [];
+  symbols.forEach((s, i) => {
+    const t = tickers[s];
+    if (!t) return;
+    const [m5raw, h1raw, levels] = per[i];
+    live.push(s);
+    blocks.push(
+      symbolBlock({
+        symbol: s,
+        t,
+        m5: closedOnly(m5raw, "5min", now),
+        h1: closedOnly(h1raw, "1hour", now),
+        levels,
+      }),
+    );
+  });
+  return { live, blocks, brief };
+}
+
+export function brainFreshness(regime, intervalMin, now) {
+  if (!regime) return { stale: true, expired: true };
+  const age = now - regime.at;
+  return { stale: age >= intervalMin * 60000, expired: age >= intervalMin * 2 * 60000 };
+}
+
+// AI型の脳（1回の呼び出しで全銘柄を判定）。shadow=true なら影の脳として判定間隔を長くする
+export async function runAiBrain({ id, force = false, shadow = false } = {}) {
+  const brain = getBrain(id);
+  if (!brain || brain.kind !== "ai" || brain.disabled) throw new Error("この脳は使えません");
+  if (id === "ai_committee") return runRegime({ force });
+  const now = Date.now();
+  const [stored, current] = await redis.mget(K.config, K.brainRegime(id));
+  const cfg = mergeConfig(stored);
+  const interval = shadow ? cfg.shadowIntervalMin : cfg.regimeIntervalMin;
+  if (!force && current && !brainFreshness(current, interval, now).stale)
+    return { regime: current, skipped: true };
+  const symbols = portfolioOf(cfg)
+    .map((p) => p.symbol)
+    .slice(0, 6);
+  if (!symbols.length) return { regime: current, skipped: true, error: "監視する銘柄がありません" };
+  const ok = await acquireLock(K.brainLock(id), 200);
+  if (!ok) return { regime: current, busy: true };
+  try {
+    const { live, blocks, brief } = await gather(symbols, now);
+    if (!live.length) throw new Error("どの銘柄もレートを取得できません");
+    const shape = `{"summary":"全体の見立て60字以内","events":[{"time_jst":"HH:MM","name":"指標名","currency":"USD","impact":"high|medium"}],"symbols":{${live
+      .map(
+        (s) =>
+          `"${s}":{"mode":"TREND_UP|TREND_DOWN|RANGE|NO_TRADE","allow":"LONG|SHORT|BOTH|NONE","confidence":0-100,"max_spread_pips":数値,"pause_until_jst":"HH:MM"またはnull,"summary":"40字以内","technical":["根拠"],"fundamental":["根拠"],"reasons":["総合"]}`,
+      )
+      .join(",")}}}`;
+    const prompt = `現在時刻: ${jstLabel(now)}
+監視銘柄: ${live.join("、")}
+${brain.searches ? `\n# 本日のブリーフ\n${briefText(brief)}\n` : ""}
+# 銘柄ごとのデータ
+${blocks.join("\n\n")}
+
+# やること
+${brain.searches ? `必要ならweb_searchで直近のニュースと指標を確認する（最大${brain.searches}回）。` : "検索はしない。与えられたデータだけで判断する。"}
+あなたの考え方に従って、銘柄ごとに今後${interval}分間の方針を決める。max_spread_pips はその銘柄の単位（FXはpips、暗号資産はbp）。
+
+# 出力（JSONのみ）
+${shape}`;
+    const model = modelOf(cfg, id);
+    const res = await askClaude({
+      model: model.id,
+      system: brain.system,
+      prompt,
+      searches: brain.searches || 0,
+      maxTokens: 1000 + 600 * live.length,
+    });
+    const j = res.json || {};
+    const out = {};
+    for (const s of live) {
+      const r = normalizeOne(j.symbols?.[s], now);
+      if (r.mode !== "NO_TRADE" && r.confidence < 45) {
+        r.mode = "NO_TRADE";
+        r.allow = "NONE";
+      }
+      out[s] = { ...r, chairMode: r.mode, chairConfidence: r.confidence, critic: null };
+    }
+    const regime = {
+      at: now,
+      brain: id,
+      model: model.key,
+      summary: String(j.summary || "").slice(0, 120),
+      events: (Array.isArray(j.events) ? j.events : [])
+        .slice(0, 8)
+        .map((e) => ({
+          time_jst: String(e?.time_jst || ""),
+          name: String(e?.name || "").slice(0, 60),
+          currency: String(e?.currency || "")
+            .toUpperCase()
+            .slice(0, 6),
+          impact: e?.impact === "high" ? "high" : "medium",
+          ts: hmToTs(e?.time_jst, now),
+        }))
+        .filter((e) => e.ts),
+      symbols: out,
+    };
+    await redis.set(K.brainRegime(id), regime);
+    await logJudgment(id, regime);
+    return { regime };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const fallback = {
+      at: now - Math.max(0, interval - 5) * 60000,
+      error: true,
+      brain: id,
+      summary: `判定に失敗：${msg}`,
+      events: [],
+      symbols: {},
+    };
+    await redis.set(K.brainRegime(id), fallback);
+    await addLog(`${brain.name}の判定に失敗：${msg}`, "error");
+    return { regime: fallback, error: msg };
+  } finally {
+    await redis.del(K.brainLock(id));
+  }
+}
+
+export { MODELS };

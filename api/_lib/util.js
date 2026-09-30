@@ -53,6 +53,10 @@ export const DEFAULT_CONFIG = {
   autoPickAt: null,
   // ポートフォリオ（AIおまかせ時に、合格した銘柄と各銘柄の設定が入る）
   portfolio: [],
+  activeBrain: null, // 使用中の脳（brains.js）。未設定なら aiMode から決める
+  shadowBrains: [], // 影で比較する脳（最大3つ）
+  brainModels: {}, // 脳ごとのClaudeモデル（haiku / sonnet / opus）
+  shadowIntervalMin: 60, // 影の脳（AI型）の判定間隔
   aiMode: "rules", // rules=ルールだけで方針を決める（Claude不要・無料） / claude=AIチームが方針を決める
   maxSymbols: 5, // 採用する銘柄数の上限
   maxPositions: 3, // 同時に持つポジション数の上限
@@ -120,6 +124,7 @@ export const NUMERIC_LIMITS = {
   maxSymbols: [1, 11],
   maxPositions: [1, 11],
   maxSameCurrency: [1, 11],
+  shadowIntervalMin: [15, 240],
 };
 
 const JST = 9 * 3600 * 1000;

@@ -62,7 +62,8 @@ const NUM_GROUPS = [
   {
     title: "AIと動作",
     fields: [
-      ["regimeIntervalMin", "AIが方針を見直す間隔（分）", 5],
+      ["regimeIntervalMin", "使用中のAIの脳が方針を見直す間隔（分）", 5],
+      ["shadowIntervalMin", "影のAIの脳が方針を見直す間隔（分）", 15],
       ["maxSymbols", "AIおまかせで採用する銘柄数の上限", 1],
       ["tickSec", "価格チェックの間隔（秒）", 1],
       ["feePerUnit", "API手数料（円/通貨・片道）", 0.001],
@@ -245,27 +246,9 @@ export default function SettingsPage({ hasPosition, onSaved, onLogout }) {
         </Card>
       )}
 
-      <Card title="相場の方針を決める方法">
-        <div className="seg">
-          <button
-            type="button"
-            aria-selected={form.aiMode !== "claude"}
-            onClick={() => set("aiMode", "rules")}
-          >
-            ルールだけ（無料）
-          </button>
-          <button
-            type="button"
-            aria-selected={form.aiMode === "claude"}
-            onClick={() => set("aiMode", "claude")}
-          >
-            AIチーム（Claude）
-          </button>
-        </div>
+      <Card title="相場の方針を決める脳">
         <p className="hint">
-          {form.aiMode === "claude"
-            ? "議長・反論役・ファンダ担当が方針を決めます。Claude APIの料金がかかります（APIキーの設定が必要）。"
-            : "1時間足の移動平均で上昇・下降・レンジを判定します。検証と同じ判定なので、検証結果に一番近い動きになります。Claudeは使わないので無料です。"}
+          「脳みそ」タブで、使う脳（ルール型・AI型）とClaudeのモデルを選べます。ほかの脳を「影」で走らせて、成績を比べることもできます。
         </p>
       </Card>
 

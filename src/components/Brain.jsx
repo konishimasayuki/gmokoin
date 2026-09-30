@@ -1,4 +1,5 @@
 import { ALLOW_JP, CRITIC_JP, MODE_JP, hm, price, symbolLabel } from "../format.js";
+import BrainsPanel from "./BrainsPanel.jsx";
 import { Badge, Card, Empty } from "./ui.jsx";
 
 function List({ items }) {
@@ -111,7 +112,19 @@ function Ladder({ levels, digits, mid }) {
   );
 }
 
-export default function Brain({ snap, loading, onRegime, onBrief, onLevels, focus, onFocus }) {
+export default function Brain({
+  snap,
+  loading,
+  onRegime,
+  onBrief,
+  onLevels,
+  focus,
+  onFocus,
+  brainsData,
+  onSetActive,
+  onToggleShadow,
+  onModel,
+}) {
   const reg = snap?.regime;
   const b = snap?.brief;
   const rows = snap?.rows || [];
@@ -123,7 +136,17 @@ export default function Brain({ snap, loading, onRegime, onBrief, onLevels, focu
 
   return (
     <>
-      <Card title="AIチーム">
+      <BrainsPanel
+        data={brainsData}
+        onSetActive={onSetActive}
+        onToggleShadow={onToggleShadow}
+        onModel={onModel}
+        busy={loading.brains}
+      />
+
+      <h2 className="section-title">いまの判断</h2>
+
+      <Card title="AIチーム（AIチームの脳を使うときの担当）">
         <Team snap={snap} />
         <p className="hint">
           ファンダ担当が朝に材料を整理し、議長が15分ごとに全銘柄の方針をまとめて決め、反論役がそれを突きます。最後はプログラムのルールが、同時に持つ数と通貨の偏りを守って売買します。

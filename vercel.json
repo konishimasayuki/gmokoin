@@ -3,6 +3,7 @@
   "functions": {
     "api/regime.js": { "maxDuration": 240 },
     "api/brief.js": { "maxDuration": 240 },
+    "api/brain.js": { "maxDuration": 240 },
     "api/report.js": { "maxDuration": 180 },
     "api/backtest.js": { "maxDuration": 300 },
     "api/optimize.js": { "maxDuration": 300 },

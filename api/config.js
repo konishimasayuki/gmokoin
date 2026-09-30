@@ -1,4 +1,5 @@
 import { requireAuth, sendError } from "./_lib/auth.js";
+import { MODELS, getBrain } from "./_lib/brains.js";
 import { riskLockState } from "./_lib/engine.js";
 import { K, addLog, redis } from "./_lib/redis.js";
 import {
@@ -42,6 +43,25 @@ export default async function handler(req, res) {
     if ([1, 5].includes(Number(body.signalTf))) next.signalTf = Number(body.signalTf);
     if (["auto", "manual"].includes(body.symbolMode)) next.symbolMode = body.symbolMode;
     if (["rules", "claude"].includes(body.aiMode)) next.aiMode = body.aiMode;
+    if (body.activeBrain !== undefined) {
+      const b = getBrain(body.activeBrain);
+      if (!b || b.disabled) return res.status(400).json({ error: "この脳はまだ使えません" });
+      if (b.kind === "ai" && !process.env.ANTHROPIC_API_KEY)
+        return res.status(400).json({ error: "Claude APIをつなぐと使えます" });
+      next.activeBrain = b.id;
+      next.aiMode = b.kind === "ai" ? "claude" : "rules";
+    }
+    if (Array.isArray(body.shadowBrains)) {
+      next.shadowBrains = [...new Set(body.shadowBrains)]
+        .filter((id) => getBrain(id) && !getBrain(id).disabled)
+        .slice(0, 3);
+    }
+    if (body.brainModels && typeof body.brainModels === "object") {
+      next.brainModels = { ...(cur.brainModels || {}) };
+      for (const [id, m] of Object.entries(body.brainModels)) {
+        if (getBrain(id) && MODELS[m]) next.brainModels[id] = m;
+      }
+    }
     if (next.symbolMode === "manual") next.autoBlocked = false;
 
     // 損失中・連敗中はリスクを増やす変更をロック（感情で設定をいじる事故を防ぐ）

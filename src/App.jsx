@@ -52,7 +52,7 @@ const TABS = [
   ["home", "ホーム", "M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"],
   [
     "brain",
-    "AI頭脳",
+    "脳みそ",
     "M12 3a6 6 0 0 0-6 6c0 2.2 1.2 3.6 2 4.5V17h8v-3.5c.8-.9 2-2.3 2-4.5a6 6 0 0 0-6-6zM9 20h6",
   ],
   ["results", "成績", "M4 20V10M10 20V4M16 20v-7M22 20H2"],
@@ -85,6 +85,8 @@ export default function App() {
     backtest: false,
   });
   const tickSecRef = useRef(5);
+  const snapRef = useRef(null);
+  const [brainsData, setBrainsData] = useState(null);
   const [focus, setFocus] = useState(null);
   const focusRef = useRef(null);
   const busyRef = useRef({});
@@ -133,11 +135,29 @@ export default function App() {
     }
   }, []);
 
+  // 使用中の脳に今すぐ判定させる（ルール型は常に最新なので何もしない）
   const runRegime = useCallback(
     (force) =>
       runJob("regime", async () => {
-        const r = await api.post("/api/regime", { force });
+        const b = snapRef.current?.brains?.active;
+        if (!b || b.kind !== "ai") return;
+        const r =
+          b.id === "ai_committee"
+            ? await api.post("/api/regime", { force })
+            : await api.post("/api/brain", { id: b.id, force });
         if (r.regime) setSnap((s) => (s ? { ...s, regime: r.regime, regimeStale: false } : s));
+        if (r.error) setErr(`AI判定に失敗：${r.error}`);
+      }),
+    [runJob],
+  );
+  // AI型の脳（使用中・影）の定期判定
+  const runBrainAuto = useCallback(
+    (id, shadow) =>
+      runJob(`brain:${id}`, async () => {
+        const r =
+          id === "ai_committee"
+            ? await api.post("/api/regime", {})
+            : await api.post("/api/brain", { id, shadow });
         if (r.error) setErr(`AI判定に失敗：${r.error}`);
       }),
     [runJob],
@@ -205,7 +225,8 @@ export default function App() {
           mergeSnap(s);
           setErr("");
           tickSecRef.current = s.config?.tickSec || 5;
-          const useAi = s.config?.aiMode === "claude";
+          snapRef.current = s;
+          const useAi = s.aiAvailable && s.brains?.active?.kind === "ai";
           if (s.config?.running) {
             if (useAi && s.briefStale && !autoRef.current.brief) {
               autoRef.current.brief = true;
@@ -219,7 +240,11 @@ export default function App() {
               autoRef.current.optimize = true;
               runOptimize(true);
             }
-            if (useAi && s.regimeStale) runRegime(false);
+            if (s.aiAvailable) {
+              for (const [id, stale] of Object.entries(s.brains?.stale || {})) {
+                if (stale) runBrainAuto(id, id !== s.brains.active.id);
+              }
+            }
           }
           n++;
         }
@@ -239,9 +264,10 @@ export default function App() {
       clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVis);
     };
-  }, [authed, mergeSnap, runRegime, runBrief, runLevels, runOptimize]);
+  }, [authed, mergeSnap, runBrainAuto, runBrief, runLevels, runOptimize]);
 
   useEffect(() => {
+    if (authed && tab === "brain") loadBrains();
     if (!authed || tab !== "results") return;
     api
       .get("/api/report")
@@ -327,6 +353,41 @@ export default function App() {
     }
   };
 
+  const loadBrains = useCallback(() => {
+    api
+      .get("/api/brains")
+      .then((r) => setBrainsData({ ...r, at: Date.now() }))
+      .catch((e) => setErr(e.message));
+  }, []);
+
+  const brainConfig = async (body, msg) => {
+    setLoading((l) => ({ ...l, brains: true }));
+    try {
+      const out = await api.post("/api/config", body);
+      setSnap((s) => (s ? { ...s, config: out.config } : s));
+      loadBrains();
+      if (msg) flash(msg);
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setLoading((l) => ({ ...l, brains: false }));
+    }
+  };
+  const onSetActive = (id) => brainConfig({ activeBrain: id }, "使う脳を切り替えました");
+  const onToggleShadow = (id) => {
+    const cur = brainsData?.shadows || [];
+    const next = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
+    if (next.length > 3) {
+      setErr("影で比較できるのは3つまでです");
+      return;
+    }
+    brainConfig(
+      { shadowBrains: next },
+      cur.includes(id) ? "影の比較をやめました" : "影で比較を始めました",
+    );
+  };
+  const onModel = (id, model) => brainConfig({ brainModels: { [id]: model } });
+
   const logout = async () => {
     await api.del("/api/login").catch(() => {});
     setAuthed(false);
@@ -383,6 +444,10 @@ export default function App() {
               onRegime={() => runRegime(true)}
               onBrief={() => runBrief(true)}
               onLevels={() => runLevels(true)}
+              brainsData={brainsData}
+              onSetActive={onSetActive}
+              onToggleShadow={onToggleShadow}
+              onModel={onModel}
             />
           )}
           {tab === "results" && (

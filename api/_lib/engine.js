@@ -1,4 +1,5 @@
 // ポートフォリオ運用エンジン：複数銘柄を同時に監視し、条件がそろった銘柄から入る
+import { activeBrainOf, modelOf, shadowBrainsOf } from "./brains.js";
 import { briefStale } from "./brief.js";
 import { closedOnly, getCachedKlines, getTickers } from "./gmo.js";
 import { computeScalpIndicators } from "./indicators.js";
@@ -57,6 +58,18 @@ export function regimeOf(regime, symbol) {
   return regime.symbol === symbol ? regime : null;
 }
 
+function addToStats(st, net, fee = 0) {
+  return {
+    net: st.net + net,
+    trades: st.trades + 1,
+    wins: st.wins + (net > 0 ? 1 : 0),
+    grossWin: st.grossWin + (net > 0 ? net : 0),
+    grossLoss: st.grossLoss + (net < 0 ? -net : 0),
+    fees: st.fees + fee,
+    since: st.since || Date.now(),
+  };
+}
+
 function no(why, waiting = false) {
   return { ok: false, why, waiting };
 }
@@ -94,6 +107,7 @@ async function closeTrade({ pos, exit, reason, closedAt, cfg, conv, acct }) {
     session: pos.session,
     regimeMode: pos.regimeMode,
     regimeConfidence: pos.regimeConfidence,
+    brain: pos.brain || null,
     beMoved: Boolean(pos.beMoved),
     openedAt: pos.openedAt,
     closedAt,
@@ -142,6 +156,11 @@ async function closeTrade({ pos, exit, reason, closedAt, cfg, conv, acct }) {
   if (pauseUntil)
     p.set(K.pauseUntil, pauseUntil, { ex: Math.ceil((pauseUntil - closedAt) / 1000) });
   await p.exec();
+  // 脳ごとの成績（本番運用分）
+  if (pos.brain) {
+    const bs = { ...EMPTY_STATS, ...((await redis.get(K.brainStats(pos.brain))) || {}) };
+    await redis.set(K.brainStats(pos.brain), addToStats(bs, net, fee));
+  }
   const sign = net >= 0 ? "+" : "";
   await addLog(
     `${label(pos.symbol)} ${SIDE_JP[pos.side]}決済（${reason}）${sign}${pips}${trade.unit} / ${sign}${net.toLocaleString("ja-JP")}円`,
@@ -314,7 +333,7 @@ function evaluateEntry(x) {
   };
 }
 
-async function openPosition({ ev, cfg, t, r, now, pip }) {
+async function openPosition({ ev, cfg, t, r, now, pip, brain }) {
   const digits = priceDigits(cfg.symbol);
   const pos = {
     id: `${now.toString(36)}${Math.random().toString(36).slice(2, 6)}`,
@@ -332,6 +351,7 @@ async function openPosition({ ev, cfg, t, r, now, pip }) {
     session: ev.session,
     regimeMode: r?.mode || null,
     regimeConfidence: r?.confidence ?? null,
+    brain: brain || null,
     timeStopMin: cfg.timeStopMin,
     beOn: cfg.beOn,
     beTrigger: cfg.beOn ? ev.slDist * cfg.beTriggerR : null,
@@ -377,6 +397,94 @@ function nearestLevels(levels, price) {
   return { above, below };
 }
 
+// 影の脳の仮想売買（Redisには book ごとまとめて保存）
+function runShadow({ book, st, breg, bfresh, brief, cfg, now }) {
+  const close = (x, pos, exit, reason, at) => {
+    const pip = pos.pip || pipSize(pos.symbol, pos.entry);
+    const dir = pos.side === "BUY" ? 1 : -1;
+    const fee = round(feeOf(pos.symbol, pos.units, x.cfg), 0);
+    const net = round(pnlYen(pos.side, pos.entry, exit, pos.units, x.conv) - fee, 0);
+    book.stats = addToStats(book.stats, net, fee);
+    book.trades = [
+      {
+        symbol: pos.symbol,
+        side: pos.side,
+        setup: pos.setup,
+        reason,
+        openedAt: pos.openedAt,
+        closedAt: at,
+        pips: round((dir * (exit - pos.entry)) / pip, 1),
+        net,
+      },
+      ...book.trades,
+    ].slice(0, 50);
+    book.lastClose[pos.symbol] = at;
+    delete book.positions[pos.symbol];
+  };
+  for (const x of st) {
+    const pos0 = book.positions[x.symbol];
+    if (!pos0 || !x.t) continue;
+    const pos = { ...pos0 };
+    const scan = scanCandles(pos, x.candles);
+    let hit = scan.hit;
+    let at = hit?.at ?? now;
+    if (!hit && x.t.status === "OPEN") {
+      hit = liveCheck(pos, x.t, now);
+      at = now;
+    }
+    if (hit) close(x, pos, hit.exit, hit.reason, Math.max(at, pos.openedAt));
+    else book.positions[x.symbol] = pos;
+  }
+  const cands = [];
+  for (const x of st) {
+    if (!x.inPortfolio || !x.t || book.positions[x.symbol]) continue;
+    const ev = evaluateEntry({
+      cfg: x.cfg,
+      r: regimeOf(breg, x.symbol),
+      fresh: bfresh,
+      brief,
+      regime: breg,
+      levels: x.levels,
+      t: x.t,
+      market: { spreadPips: round((x.t.ask - x.t.bid) / x.pip, 1) },
+      acct: { daily: { pnl: 0, trades: 0 }, stats: book.stats, pauseUntil: null },
+      cooldown:
+        book.lastClose[x.symbol] && now - book.lastClose[x.symbol] < x.cfg.cooldownSec * 1000,
+      lastSignal: book.lastSignal[x.symbol],
+      sig: x.sig,
+      now,
+      pip: x.pip,
+      conv: x.conv,
+    });
+    if (ev.ok) cands.push({ x, ev });
+  }
+  cands.sort((a, b) => b.ev.confidence - a.ev.confidence);
+  for (const { x, ev } of cands) {
+    const cur = Object.values(book.positions);
+    if (cur.length >= cfg.maxPositions) break;
+    if (exposureBlock(cur, x.symbol, ev.side, cfg.maxSameCurrency)) continue;
+    book.positions[x.symbol] = {
+      symbol: x.symbol,
+      side: ev.side,
+      units: ev.units,
+      entry: ev.entry,
+      sl: ev.sl,
+      tp: ev.tp,
+      openedAt: now,
+      scanFrom: Math.floor(now / MIN) * MIN + MIN,
+      spreadPrice: x.t.ask - x.t.bid,
+      setup: ev.setup,
+      timeStopMin: x.cfg.timeStopMin,
+      beOn: x.cfg.beOn,
+      beTrigger: x.cfg.beOn ? ev.slDist * x.cfg.beTriggerR : null,
+      beMoved: false,
+      pip: x.pip,
+      digits: priceDigits(x.symbol),
+    };
+    book.lastSignal[x.symbol] = ev.lastT;
+  }
+}
+
 // 旧形式（1ポジションだけ）のデータを移行
 async function migrateLegacy() {
   const legacy = await redis.get(K.position);
@@ -416,12 +524,24 @@ export async function runTick({ full = false, focus = null } = {}) {
     K.lastSignalOf(s),
     K.levels(s),
   ]);
-  const rulesMode = cfg.aiMode !== "claude";
+  const activeBrain = activeBrainOf(cfg);
+  const shadowBrains = shadowBrainsOf(cfg);
+  const rulesMode = activeBrain.kind === "rules";
+  const needMech = rulesMode || shadowBrains.some((b) => b.kind === "rules");
+  const aiIds = [activeBrain, ...shadowBrains]
+    .filter((b) => b.kind === "ai" && b.id !== "ai_committee")
+    .map((b) => b.id);
+  const [aiRegimes, shadowStates] = await Promise.all([
+    aiIds.length ? redis.mget(...aiIds.map((id) => K.brainRegime(id))) : Promise.resolve([]),
+    shadowBrains.length
+      ? redis.mget(...shadowBrains.map((b) => K.shadow(b.id)))
+      : Promise.resolve([]),
+  ]);
   const [tickers, klines, hourly, perVals, extra] = await Promise.all([
     symbols.length ? fetchTickers(symbols) : Promise.resolve({}),
     Promise.all(symbols.map((s) => getCachedKlines(s, "1min", now).catch(() => []))),
     // ルール判定用の1時間足（5分キャッシュ）
-    rulesMode
+    needMech
       ? Promise.all(
           symbols.map((s) =>
             getCachedKlines(s, "1hour", now, { ttlMs: 5 * MIN, days: 4, keep: 120 }).catch(
@@ -440,10 +560,10 @@ export async function runTick({ full = false, focus = null } = {}) {
     streak: streakRaw || { losses: 0 },
     pauseUntil: Number(pauseUntil) || null,
   };
-  // ルールモード：Claudeの代わりに1時間足の移動平均で方針を決める（検証と同じ判定）
-  let effRegime = regime;
-  if (rulesMode) {
-    effRegime = {
+  // ルール型の脳：Claudeの代わりに1時間足の移動平均で方針を決める（検証と同じ判定）
+  let mechRegime = null;
+  if (needMech) {
+    mechRegime = {
       at: now,
       rules: true,
       summary: "ルール判定（1時間足の移動平均。Claudeは使っていません）",
@@ -453,7 +573,7 @@ export async function runTick({ full = false, focus = null } = {}) {
     symbols.forEach((s, i) => {
       const h1 = closedOnly(hourly[i] || [], "1hour", now);
       const m = mechanicalRegimeAt(buildMechanicalRegime(h1), now);
-      effRegime.symbols[s] = {
+      mechRegime.symbols[s] = {
         ...m,
         confidence: m.mode === "NO_TRADE" ? 0 : 60,
         summary: "",
@@ -461,7 +581,18 @@ export async function runTick({ full = false, focus = null } = {}) {
       };
     });
   }
-  const fresh = rulesMode ? { stale: false, expired: false } : regimeFreshness(regime, cfg, now);
+  const aiRegimeMap = Object.fromEntries(aiIds.map((id, i) => [id, aiRegimes[i]]));
+  const regimeFor = (b) =>
+    b.kind === "rules" ? mechRegime : b.id === "ai_committee" ? regime : aiRegimeMap[b.id] || null;
+  const freshFor = (b, interval) => {
+    if (b.kind === "rules") return { stale: false, expired: false };
+    const r = regimeFor(b);
+    if (!r) return { stale: true, expired: true };
+    const age = now - r.at;
+    return { stale: age >= interval * MIN, expired: age >= interval * 2 * MIN };
+  };
+  const effRegime = regimeFor(activeBrain);
+  const fresh = freshFor(activeBrain, cfg.regimeIntervalMin);
 
   // 銘柄ごとの下ごしらえ
   const st = symbols.map((symbol, i) => {
@@ -590,8 +721,36 @@ export async function runTick({ full = false, focus = null } = {}) {
           x.decision = { state: "blocked", text: ex };
           continue;
         }
-        x.pos = await openPosition({ ev, cfg: x.cfg, t: x.t, r: x.r, now, pip: x.pip });
+        x.pos = await openPosition({
+          ev,
+          cfg: x.cfg,
+          t: x.t,
+          r: x.r,
+          now,
+          pip: x.pip,
+          brain: activeBrain.id,
+        });
         x.decision = { state: "entered", text: `${SIDE_JP[ev.side]}エントリー（${ev.setup}）` };
+      }
+
+      // 3) 影の脳：同じ相場・同じ売買ルールで、判断だけ差し替えて仮想売買する（本番の注文には影響しない）
+      if (cfg.running) {
+        for (let bi = 0; bi < shadowBrains.length; bi++) {
+          const b = shadowBrains[bi];
+          const book = {
+            positions: {},
+            lastSignal: {},
+            lastClose: {},
+            trades: [],
+            ...(shadowStates[bi] || {}),
+          };
+          book.stats = { ...EMPTY_STATS, ...(book.stats || {}) };
+          const breg = regimeFor(b);
+          const bfresh = freshFor(b, cfg.shadowIntervalMin);
+          runShadow({ book, st, breg, bfresh, brief, cfg, now });
+          shadowStates[bi] = book;
+          await redis.set(K.shadow(b.id), book, { ex: 60 * 60 * 24 * 60 });
+        }
       }
     } finally {
       await redis.del(K.tickLock);
@@ -674,6 +833,32 @@ export async function runTick({ full = false, focus = null } = {}) {
       unrealized: positions.reduce((s, r) => s + (r.position.yen || 0), 0),
     },
     closed: closedTrades,
+    aiAvailable: Boolean(process.env.ANTHROPIC_API_KEY),
+    brains: {
+      active: {
+        id: activeBrain.id,
+        name: activeBrain.name,
+        kind: activeBrain.kind,
+        model: activeBrain.kind === "ai" ? modelOf(cfg, activeBrain.id).label : null,
+      },
+      shadows: shadowBrains.map((b, i) => ({
+        id: b.id,
+        name: b.name,
+        kind: b.kind,
+        open: Object.keys(shadowStates[i]?.positions || {}).length,
+        stats: shadowStates[i]?.stats || null,
+      })),
+      // 判定の更新が必要なAI型の脳
+      stale: Object.fromEntries(
+        [activeBrain, ...shadowBrains]
+          .filter((b) => b.kind === "ai")
+          .map((b) => [
+            b.id,
+            freshFor(b, b.id === activeBrain.id ? cfg.regimeIntervalMin : cfg.shadowIntervalMin)
+              .stale,
+          ]),
+      ),
+    },
     daily: acct.daily,
     stats: acct.stats,
     equity: round(cfg.paperBalance + acct.stats.net, 0),

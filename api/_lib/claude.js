@@ -32,10 +32,16 @@ export function extractJson(text) {
 }
 
 // 役割(system)とプロンプトを渡してJSONを受け取る。searches>0ならweb検索を許可
-export async function askClaude({ system, prompt, searches = 0, maxTokens = 2500 }) {
+export async function askClaude({
+  system,
+  prompt,
+  searches = 0,
+  maxTokens = 2500,
+  model: modelId,
+}) {
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) throw new Error("ANTHROPIC_API_KEY が未設定です");
-  const model = process.env.CLAUDE_MODEL || "claude-sonnet-5-5";
+  const model = modelId || process.env.CLAUDE_MODEL || "claude-sonnet-5-5";
   const headers = {
     "content-type": "application/json",
     "x-api-key": key,
