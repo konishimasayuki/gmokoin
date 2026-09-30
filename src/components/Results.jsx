@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { SIDE_JP, hm, mdhm, pips, symbolLabel, tone, yen } from "../format.js";
+import FundSim from "./FundSim.jsx";
 import Spark from "./Spark.jsx";
 import { Badge, Card, Empty, Metric } from "./ui.jsx";
 
@@ -755,6 +756,7 @@ const TABS = [
   ["overall", "成績"],
   ["report", "レポート"],
   ["backtest", "検証"],
+  ["sim", "資金シミュ"],
   ["history", "履歴"],
 ];
 
@@ -796,6 +798,7 @@ export default function Results(props) {
         </>
       )}
       {tab === "report" && <Reports {...props} />}
+      {tab === "sim" && <FundSim />}
       {tab === "backtest" && (
         <>
           <Optimize

@@ -27,6 +27,9 @@
     },
     "api/cron.js": {
       "maxDuration": 300
+    },
+    "api/fundsim.js": {
+      "maxDuration": 120
     }
   },
   "crons": [
