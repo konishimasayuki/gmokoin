@@ -19,9 +19,11 @@ export default async function handler(req, res) {
     if (body.action === "symbol") {
       if (!SYMBOLS.includes(body.symbol))
         return res.status(400).json({ error: "対応していない銘柄です" });
-      return res
-        .status(200)
-        .json({ symbolResult: await (wwOnly ? optimizeSymbolWW : optimizeSymbol)(body.symbol) });
+      return res.status(200).json({
+        symbolResult: await (wwOnly ? optimizeSymbolWW : optimizeSymbol)(body.symbol, {
+          force: Boolean(body.force),
+        }),
+      });
     }
     if (body.action === "finalize") {
       return res.status(200).json({

@@ -1,13 +1,38 @@
 {
   "regions": ["hnd1"],
   "functions": {
-    "api/regime.js": { "maxDuration": 240 },
-    "api/brief.js": { "maxDuration": 240 },
-    "api/brain.js": { "maxDuration": 240 },
-    "api/report.js": { "maxDuration": 180 },
-    "api/backtest.js": { "maxDuration": 300 },
-    "api/optimize.js": { "maxDuration": 300 },
-    "api/levels.js": { "maxDuration": 60 },
-    "api/tick.js": { "maxDuration": 20 }
-  }
+    "api/regime.js": {
+      "maxDuration": 240
+    },
+    "api/brief.js": {
+      "maxDuration": 240
+    },
+    "api/brain.js": {
+      "maxDuration": 240
+    },
+    "api/report.js": {
+      "maxDuration": 180
+    },
+    "api/backtest.js": {
+      "maxDuration": 300
+    },
+    "api/optimize.js": {
+      "maxDuration": 300
+    },
+    "api/levels.js": {
+      "maxDuration": 60
+    },
+    "api/tick.js": {
+      "maxDuration": 20
+    },
+    "api/cron.js": {
+      "maxDuration": 300
+    }
+  },
+  "crons": [
+    {
+      "path": "/api/cron",
+      "schedule": "30 21 * * *"
+    }
+  ]
 }

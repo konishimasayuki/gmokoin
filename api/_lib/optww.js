@@ -14,6 +14,8 @@ import {
   round,
 } from "./util.js";
 
+// 判定ルールを変えたら上げる（同じ日の結果の使い回しを止めるため）
+export const WW_VERSION = 2;
 export const WW_DAYS = 365;
 export const WW_TEST_DAYS = 120;
 const RESULT_TTL = 12 * 3600 * 1000;
@@ -101,7 +103,25 @@ function statsOf(trades) {
   };
 }
 
-export async function optimizeSymbolWW(symbol, { now = Date.now() } = {}) {
+// 同じ営業日・同じルールの結果があれば、計算し直さずにそれを返す
+export async function cachedWW(symbol, now = Date.now()) {
+  const cur = await redis.get(K.optSymbol(symbol));
+  if (
+    cur?.mode === "ww" &&
+    cur.version === WW_VERSION &&
+    cur.at &&
+    businessDate(cur.at) === businessDate(now) &&
+    (cur.params || cur.error)
+  )
+    return cur;
+  return null;
+}
+
+export async function optimizeSymbolWW(symbol, { now = Date.now(), force = false } = {}) {
+  if (!force) {
+    const hit = await cachedWW(symbol, now);
+    if (hit) return { ...hit, params: undefined, cached: true };
+  }
   const ok = await acquireLock(`${K.optimizeLock}:${symbol}`, 290);
   if (!ok) throw new Error(`${symbol}は検証中です`);
   try {
@@ -191,6 +211,7 @@ export async function optimizeSymbolWW(symbol, { now = Date.now() } = {}) {
       symbol,
       at: now,
       mode: "ww",
+      version: WW_VERSION,
       days: WW_DAYS,
       testDays: WW_TEST_DAYS,
       spreadPips: round(spread / pip, 2),
@@ -216,7 +237,9 @@ export async function finalizeWW({ apply = false, now = Date.now() } = {}) {
   const results = SYMBOLS.map((s, i) => rows[i] || { symbol: s, error: "未検証" }).map((r) =>
     r.at && now - r.at > RESULT_TTL ? { ...r, stale: true } : r,
   );
-  const usable = results.filter((r) => r.mode === "ww" && !r.stale && !r.error && r.params);
+  const usable = results.filter(
+    (r) => r.mode === "ww" && r.version === WW_VERSION && !r.stale && !r.error && r.params,
+  );
   const combos = wwCombos();
   const testFrom = now - WW_TEST_DAYS * DAY;
   const fromTs = now - WW_DAYS * DAY;
