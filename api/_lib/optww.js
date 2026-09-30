@@ -428,7 +428,23 @@ function poolMethod(mk, usable, perSymbolParams, now, balance) {
       .sort((a, b) => b.net - a.net),
     others: pooled.slice(1).map((x) => {
       const m = metricsOf(x.trades, {});
-      return { label: M.label(x.p), trades: m.trades, winRate: m.winRate, pf: m.pf, net: m.net };
+      const tr = metricsOf(
+        x.trades.filter((t) => t.closedAt < testFrom),
+        {},
+      );
+      const te = metricsOf(
+        x.trades.filter((t) => t.closedAt >= testFrom),
+        {},
+      );
+      return {
+        label: M.label(x.p),
+        trades: m.trades,
+        winRate: m.winRate,
+        pf: m.pf,
+        net: m.net,
+        train: { trades: tr.trades, pf: tr.pf, net: tr.net },
+        test: { trades: te.trades, pf: te.pf, net: te.net },
+      };
     }),
     sample: top.per
       .flatMap((z) => z.x.sample)

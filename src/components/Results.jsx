@@ -299,7 +299,10 @@ function wwText(pool, days, testDays) {
       (b) => ` ${symbolLabel(b.symbol)} ${b.trades}回 勝率${b.winRate}% PF${b.pf} ${y(b.net)}`,
     ),
     "■ ほかの設定（全銘柄まとめ）",
-    ...pool.others.map((o) => ` ${o.label}：${o.trades}回 勝率${o.winRate}% PF${o.pf} ${y(o.net)}`),
+    ...pool.others.map(
+      (o) =>
+        ` ${o.label}：${o.trades}回 勝率${o.winRate}% PF${o.pf} ${y(o.net)}${o.test ? `（前 PF${o.train.pf}・${o.train.trades}回 ／ 直近 PF${o.test.pf}・${o.test.trades}回・${y(o.test.net)}）` : ""}`,
+    ),
   ];
   return out.filter(Boolean).join("\n");
 }
