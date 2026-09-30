@@ -181,7 +181,7 @@ const CHECKS = [
   ["dd", "含み損込みの最大ドローダウンが資金の30%以下か"],
 ];
 
-const STRAT = { scalp: "スキャル", grid: "リピート" };
+const STRAT = { scalp: "スキャル", grid: "リピート", ww: "クロユキWW" };
 
 // Claudeに貼り付けて分析してもらうための要約テキスト
 function exportText(result) {
@@ -219,6 +219,7 @@ function exportText(result) {
     if (r.error) continue;
     out.push(` [スキャル] ${line(r.bestScalp || (r.best?.strategy !== "grid" ? r.best : null))}`);
     out.push(` [リピート] ${line(r.bestGrid)}`);
+    out.push(` [クロユキWW] ${line(r.bestWW)}`);
     if (r.current)
       out.push(`  いまの設定: PF ${r.current.pf}(${r.current.trades}回・${y(r.current.net)})`);
   }
@@ -267,7 +268,7 @@ function Optimize({ result: raw, loading, onRun, onUse, auto, progress }) {
   return (
     <Card title="AIによる銘柄・設定の自動選定">
       <p className="hint">
-        FX6銘柄と仮想通貨5銘柄で、スキャルピング約580通り＋リピート72通りの設定を90日分のデータで試し、6段階の検証をすべて通ったものだけを採用します。ランダムな週と引き直しは日替わりです。
+        FX6銘柄と仮想通貨5銘柄で、スキャルピング約580通り＋リピート72通り＋クロユキWW16通りの設定を90日分のデータで試し、6段階の検証をすべて通ったものだけを採用します。ランダムな週と引き直しは日替わりです。
       </p>
       <button type="button" className="primary" onClick={onRun} disabled={loading.optimize}>
         {loading.optimize ? "検証中…" : auto ? "いま選び直す" : "全銘柄で検証する"}
@@ -338,11 +339,37 @@ function Optimize({ result: raw, loading, onRun, onUse, auto, progress }) {
               <Spark points={result.combinedGrid.curve} height={90} />
             </div>
           )}
+          {result.combinedWW && (
+            <div className="port-box ww-box">
+              <b>クロユキWWで合格：{result.wwSymbols.map((x) => symbolLabel(x)).join("・")}</b>
+              <small>組み合わせた場合の{result.totalDays}日間（概算・検証のみ）</small>
+              <div className="metrics">
+                <Metric
+                  label="損益"
+                  value={yen(result.combinedWW.net)}
+                  tone={tone(result.combinedWW.net)}
+                  sub={`${result.combinedWW.trades}回`}
+                />
+                <Metric
+                  label="PF"
+                  value={result.combinedWW.pf}
+                  sub={`勝率${result.combinedWW.winRate}%`}
+                />
+                <Metric
+                  label="最大DD（含み損込み）"
+                  value={`${(result.combinedWW.mtmDd ?? result.combinedWW.maxDd).toLocaleString("ja-JP")}円`}
+                  sub={`マイナス確率${Math.round(result.combinedWW.mc.lossProb * 100)}%`}
+                />
+              </div>
+              <Spark points={result.combinedWW.curve} height={90} />
+            </div>
+          )}
           <div className="opt-list">
             {result.results.map((r) => {
               const b = r.best?.checks ? r.best : null;
-              const alt = b?.strategy === "grid" ? r.bestScalp : r.bestGrid;
-              const other = alt?.checks ? alt : null;
+              const others = [r.bestScalp, r.bestGrid, r.bestWW].filter(
+                (x) => x?.checks && x.strategy !== b?.strategy,
+              );
               return (
                 <div key={r.symbol} className={`opt ${inPort(r.symbol) ? "picked" : ""}`}>
                   <div className="opt-head">
@@ -376,19 +403,23 @@ function Optimize({ result: raw, loading, onRun, onUse, auto, progress }) {
                           </li>
                         ))}
                       </ul>
-                      {other && (
-                        <small className="meta">
-                          もう一方（{STRAT[other.strategy]}）：{other.passed}/
-                          {Object.keys(other.checks).length}
-                          ・後半 PF {other.test.pf}（{yen(other.test.net)}）
+                      {others.map((o) => (
+                        <small className="meta" key={o.strategy}>
+                          {STRAT[o.strategy]}：{o.passed}/{Object.keys(o.checks).length}
+                          ・後半 PF {o.test.pf}（{o.test.trades}回・{yen(o.test.net)}）
                         </small>
-                      )}
+                      ))}
                       {b.strategy === "grid" && b.pass && (
                         <small className="meta">
                           リピートは24時間稼働にしてから運用できます（今は検証のみ）。
                         </small>
                       )}
-                      {!auto && b.pass && b.strategy !== "grid" && (
+                      {b.strategy === "ww" && b.pass && (
+                        <small className="meta">
+                          クロユキWWは検証のみです。運用に組み込むのは次の段階です。
+                        </small>
+                      )}
+                      {!auto && b.pass && b.strategy === "scalp" && (
                         <button
                           type="button"
                           className="ghost"

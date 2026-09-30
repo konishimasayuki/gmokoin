@@ -14,6 +14,7 @@ import {
   simulate,
 } from "./backtest.js";
 import { simulateGrid } from "./grid.js";
+import { simulateWW, wwCombos, wwLabel, wwNeighbors } from "./kuroyuki.js";
 import { K, acquireLock, addLog, redis } from "./redis.js";
 import {
   ASSET_DEFAULTS,
@@ -106,6 +107,7 @@ function grid(symbol) {
 }
 
 export function describe(p) {
+  if (p.strategy === "ww") return wwLabel(p);
   if (p.strategy === "grid") {
     const d = { long: "買い", short: "売り", auto: "買い/売り自動" }[p.dir];
     return `リピート${d}・過去${p.lookbackDays}日のレンジを${p.levels}分割・${p.tpSteps}マスで利確・想定外で全決済・最大損失 資金の${p.riskPct}%`;
@@ -262,6 +264,8 @@ export async function optimizeSymbol(symbol, { now = Date.now() } = {}) {
     const run = (p, a, b, extra = {}) => {
       if (p.strategy === "grid")
         return simulateGrid(prep, p, { ...env, cfg: base, fromTs: a, toTs: b, ...extra });
+      if (p.strategy === "ww")
+        return simulateWW(prep, p, { ...env, cfg: base, fromTs: a, toTs: b, ...extra });
       const cfg = { ...base, ...p };
       const trades = simulate(prep, cfg, { ...env, fromTs: a, toTs: b, ...extra });
       return { trades, mtmDd: metricsOf(trades, cfg).maxDd };
@@ -272,18 +276,24 @@ export async function optimizeSymbol(symbol, { now = Date.now() } = {}) {
     };
 
     // 1. 前半60日で候補を選ぶ（手法ごとに上位を残す）
-    const pick = (combos, n) => {
+    // keepAll=true なら、合格圏外でも上位を残す（取引が少ない手法でも結果を見せるため）
+    const pick = (combos, n, keepAll = false) => {
       const scored = [];
+      const rest = [];
       for (const p of combos) {
         const m = metrics(p, fromTs, testFrom);
         const s = score(m);
         if (s > 0) scored.push({ p, train: m, s });
+        else if (keepAll && m.trades > 0) rest.push({ p, train: m, s: m.net });
       }
       scored.sort((a, b) => b.s - a.s);
-      return { top: scored.slice(0, n), positive: scored.length, tested: combos.length };
+      rest.sort((a, b) => b.s - a.s);
+      const top = [...scored, ...rest].slice(0, n);
+      return { top, positive: scored.length, tested: combos.length };
     };
     const scalpPick = pick(grid(symbol), 8);
     const gridPick = pick(gridCombos(), 5);
+    const wwPick = pick(wwCombos(), 3, true);
 
     const rng = rngOf(`${businessDate(now)}:${symbol}`);
     // リピートは「レンジ抜けの全決済」が期間中に起きていないと勝率100%に見えてしまう。
@@ -318,9 +328,13 @@ export async function optimizeSymbol(symbol, { now = Date.now() } = {}) {
       const mc = monteCarlo(fullRun.trades, rng);
       const stressRun = run(p, fromTs, now, { spread: spread * 2, slip });
       const stress = { ...metricsOf(withWorst(p, stressRun.trades), base), mtmDd: stressRun.mtmDd };
-      const nb = (p.strategy === "grid" ? gridNeighbors(p) : neighborsOf(p)).map((q) =>
-        metrics(q, fromTs, now),
-      );
+      const nb = (
+        p.strategy === "grid"
+          ? gridNeighbors(p)
+          : p.strategy === "ww"
+            ? wwNeighbors(p)
+            : neighborsOf(p)
+      ).map((q) => metrics(q, fromTs, now));
       const nbOk = nb.filter((m) => m.pf >= 1.0 && m.net > 0).length;
       const checks = {
         split:
@@ -336,7 +350,7 @@ export async function optimizeSymbol(symbol, { now = Date.now() } = {}) {
       };
       const passed = Object.values(checks).filter(Boolean).length;
       return {
-        strategy: p.strategy === "grid" ? "grid" : "scalp",
+        strategy: p.strategy === "grid" || p.strategy === "ww" ? p.strategy : "scalp",
         params: p,
         label: describe(p),
         train,
@@ -357,9 +371,11 @@ export async function optimizeSymbol(symbol, { now = Date.now() } = {}) {
       Number(b.pass) - Number(a.pass) || b.passed - a.passed || b.robust - a.robust;
     const scalpC = scalpPick.top.map(evaluate).sort(order);
     const gridC = gridPick.top.map(evaluate).sort(order);
+    const wwC = wwPick.top.map(evaluate).sort(order);
+    const bestWW = wwC[0] || null;
     const bestScalp = scalpC[0] || null;
     const bestGrid = gridC[0] || null;
-    const best = [bestScalp, bestGrid].filter(Boolean).sort(order)[0] || null;
+    const best = [bestScalp, bestGrid, bestWW].filter(Boolean).sort(order)[0] || null;
     const current = metricsOf(run(base, fromTs, now).trades, base);
     const slim = (c) => (c ? { ...c, nets: undefined } : null);
     const result = {
@@ -367,17 +383,25 @@ export async function optimizeSymbol(symbol, { now = Date.now() } = {}) {
       at: now,
       days: round((now - fromTs) / DAY, 0),
       spreadPips: round(spread / pip, 2),
-      tested: scalpPick.tested + gridPick.tested,
+      tested: scalpPick.tested + gridPick.tested + wwPick.tested,
       unit: isCrypto(symbol) ? "bp" : "pips",
       kind: isCrypto(symbol) ? "crypto" : "fx",
-      positiveTrain: scalpPick.positive + gridPick.positive,
+      positiveTrain: scalpPick.positive + gridPick.positive + wwPick.positive,
       best: slim(best),
       bestScalp,
       bestGrid,
+      bestWW,
+      wwTried: wwPick.tested,
+      wwPositive: wwPick.positive,
       current,
     };
     await redis.set(K.optSymbol(symbol), result, { ex: 60 * 60 * 24 * 3 });
-    return { ...result, bestScalp: slim(bestScalp), bestGrid: slim(bestGrid) };
+    return {
+      ...result,
+      bestScalp: slim(bestScalp),
+      bestGrid: slim(bestGrid),
+      bestWW: slim(bestWW),
+    };
   } finally {
     await redis.del(`${K.optimizeLock}:${symbol}`);
   }
@@ -456,6 +480,15 @@ export async function finalizeOptimize({ apply = false, now = Date.now() } = {})
   const gridPassing = results.filter((r) => !r.stale && r.bestGrid?.pass);
   gridPassing.sort((a, b) => b.bestGrid.robust - a.bestGrid.robust);
   const gridChosen = gridPassing.slice(0, cfg.maxSymbols);
+  const wwPassing = results.filter((r) => !r.stale && r.bestWW?.pass);
+  wwPassing.sort((a, b) => b.bestWW.robust - a.bestWW.robust);
+  const wwChosen = wwPassing.slice(0, cfg.maxSymbols);
+  const combinedWW = wwChosen.length
+    ? combine(
+        wwChosen.map((r) => ({ best: r.bestWW })),
+        rngOf(`${businessDate(now)}:ww`),
+      )
+    : null;
   const combinedGrid = gridChosen.length
     ? combine(
         gridChosen.map((r) => ({ best: r.bestGrid })),
@@ -499,10 +532,13 @@ export async function finalizeOptimize({ apply = false, now = Date.now() } = {})
       best: r.best ? { ...r.best, nets: undefined } : r.best,
       bestScalp: r.bestScalp ? { ...r.bestScalp, nets: undefined } : r.bestScalp,
       bestGrid: r.bestGrid ? { ...r.bestGrid, nets: undefined } : r.bestGrid,
+      bestWW: r.bestWW ? { ...r.bestWW, nets: undefined } : r.bestWW,
     })),
     portfolio,
     combined,
     gridSymbols: gridChosen.map((r) => r.symbol),
+    wwSymbols: wwChosen.map((r) => r.symbol),
+    combinedWW,
     combinedGrid,
     pick: portfolio[0] ? { symbol: portfolio[0].symbol } : null,
     applied,
