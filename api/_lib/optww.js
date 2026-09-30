@@ -9,8 +9,11 @@ import {
   metricsOf,
 } from "./backtest.js";
 import {
+  fixCombos,
+  fixLabel,
   gotobiCombos,
   gotobiLabel,
+  simulateFix,
   simulateGotobi,
   simulateTrend,
   tokyoCombos,
@@ -43,7 +46,7 @@ import {
 } from "./util.js";
 
 // 判定ルールを変えたら上げる（同じ日の結果の使い回しを止めるため）
-export const WW_VERSION = 7;
+export const WW_VERSION = 8;
 
 // WWを検証する銘柄（既定は主要FXの6銘柄。仮想通貨は本の対象外なので外す）
 export function wwTargets(cfg) {
@@ -93,6 +96,15 @@ export const METHODS = {
     test: WW_TEST_DAYS_,
     label: gotobiLabel,
     symbols: ["USD_JPY"],
+  },
+  // 定時の流れ：ドルはECB・ロンドンのフィックス前に上がり、後に下がる（ドルが絡む3ペア）
+  fix: {
+    combos: fixCombos,
+    dims: ["start", "end"],
+    days: WW_DAYS_,
+    test: WW_TEST_DAYS_,
+    label: fixLabel,
+    symbols: ["USD_JPY", "EUR_USD", "GBP_USD"],
   },
   // 東京の朝の傾向を5年分の1時間足で（ドル円だけ・比べる実験つき）
   tokyo: {
@@ -279,7 +291,9 @@ export async function optimizeSymbolWW(symbol, { now = Date.now(), force = false
               ? simulateTrend(h4, p, e)
               : mk === "tokyo"
                 ? simulateGotobi(h1, p, e)
-                : simulateWW(preps[p.combo], p, e);
+                : mk === "fix"
+                  ? simulateFix(bars["1h5m"], p, e)
+                  : simulateWW(preps[p.combo], p, e);
       const params = combos.map((p) => {
         const r = m1.length || mk !== "sat" ? run(p, env) : { trades: [], mtmDd: 0 };
         const st =

@@ -2,6 +2,7 @@
 //  1) 仲値・ゴトー日：輸入企業のドル買い（仲値9:55に向けて）という実際の資金の流れを狙う
 //  2) 4時間足のトレンドフォロー：ブレイクに乗って伸ばす。保有が長いのでコストの比率が小さい
 import { atr, sma } from "./indicators.js";
+import { ukSummer } from "./kuroyuki.js";
 import { SESSION_LABEL, sessionOf, sizeUnits } from "./strategy.js";
 import { MIN_UNITS, feeOf, isCrypto, pnlYen, round } from "./util.js";
 
@@ -132,7 +133,7 @@ export function simulateGotobi(bars, p, env) {
     const net = round(pnlYen(p.side, pos.entry, exit, pos.units, conv) - fee, 0);
     trades.push({
       side: p.side,
-      setup: gotobiLabel(p),
+      setup: p.method === "fix" ? fixLabel(p) : gotobiLabel(p),
       session: SESSION_LABEL[sessionOf(pos.openedAt)] || "その他",
       units: pos.units,
       entry: pos.entry,
@@ -153,14 +154,21 @@ export function simulateGotobi(bars, p, env) {
   for (let i = 1; i < bars.length; i++) {
     const b = bars[i];
     if (b.t >= toTs) break;
-    const q = jst(b.t);
+    const q = p.localZone ? localMin(b.t, p.localZone) : jst(b.t);
     if (pos) {
       // 決済時刻の足の始値で決済（その足の中の損切りより先に判定）
       if (b.t - pos.openedAt >= hold) close(buy ? b.o : b.o + spread, "時刻で決済", b.t);
       else if (buy ? b.l <= pos.sl : b.h + spread >= pos.sl)
         close(buy ? pos.sl - slip : pos.sl + slip, "損切り", b.t + tf * MIN);
     }
-    if (!pos && b.t >= fromTs && q.m === p.entryHm && (p.days === "all" || isFixDay(b.t))) {
+    if (
+      !pos &&
+      b.t >= fromTs &&
+      q.m === p.entryHm &&
+      q.wd !== 0 &&
+      q.wd !== 6 &&
+      (p.days === "all" || isFixDay(b.t))
+    ) {
       const entry = buy ? b.o + spread + slip : b.o - slip;
       const slDist = (a[i - 1] || 0) * p.slAtr;
       if (!(slDist > spread * 3)) continue;
@@ -293,4 +301,76 @@ export function simulateTrend(bars, p, env) {
       bars.at(-1).t,
     );
   return { trades, mtmDd: round(mtmDd, 0) };
+}
+
+// ---------- 3) 定時の流れ（フィックス）：ドルはフィックス前に上がり、後に下がる ----------
+// Krohn, Mueller & Whelan (2024, Journal of Finance)。ECB（14:15 中欧時間）とロンドン（16:00 英国時間）
+
+const localMin = (ts, zone) => {
+  const summer = ukSummer(ts); // 欧州と英国の夏時間は同じ日付で切り替わる
+  const off = zone === "cet" ? (summer ? 120 : 60) : summer ? 60 : 0;
+  const d = new Date(ts + off * MIN);
+  return { m: d.getUTCHours() * 60 + d.getUTCMinutes(), wd: d.getUTCDay() };
+};
+const USD_BUY = { USD_JPY: "BUY", EUR_USD: "SELL", GBP_USD: "SELL" };
+
+export function fixCombos() {
+  const out = [];
+  const add = (leg, zone, start, end, usd, control = false) =>
+    out.push({
+      strategy: "flow",
+      method: "fix",
+      combo: leg,
+      zone,
+      start,
+      end,
+      usd,
+      control,
+      slAtr: 2,
+    });
+  // ECBフィックス前にドル買い（欧州の朝から／2時間前から）→ 後にドル売り
+  add("ecbPre", "cet", 480, 855, "BUY");
+  add("ecbPre", "cet", 735, 855, "BUY");
+  add("ecbPost", "cet", 855, 915, "SELL");
+  add("ecbPost", "cet", 855, 975, "SELL");
+  // ロンドンフィックス前にドル買い（2時間前／1時間前）→ 後にドル売り
+  add("ldnPre", "ldn", 840, 960, "BUY");
+  add("ldnPre", "ldn", 900, 960, "BUY");
+  add("ldnPost", "ldn", 960, 1020, "SELL");
+  add("ldnPost", "ldn", 960, 1080, "SELL");
+  // 比べる実験：逆向き・フィックスと関係ない時間
+  add("control", "cet", 735, 855, "SELL", true);
+  add("control", "ldn", 840, 960, "SELL", true);
+  add("control", "ldn", 660, 780, "BUY", true);
+  return out;
+}
+
+const hm2 = (m) => `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}`;
+export function fixLabel(p) {
+  const name = {
+    ecbPre: "ECBフィックス前",
+    ecbPost: "ECBフィックス後",
+    ldnPre: "ロンドンフィックス前",
+    ldnPost: "ロンドンフィックス後",
+    control: "【比べる実験】",
+  }[p.combo];
+  const tz = p.zone === "cet" ? "中欧時間" : "英国時間";
+  return `${name}・ドル${p.usd === "BUY" ? "買い" : "売り"}・${tz}${hm2(p.start)}→${hm2(p.end)}・損切りATR${p.slAtr}倍`;
+}
+
+export function simulateFix(bars, p, env) {
+  const side =
+    p.usd === "BUY" ? USD_BUY[env.symbol] : USD_BUY[env.symbol] === "BUY" ? "SELL" : "BUY";
+  if (!side) return { trades: [], mtmDd: 0 };
+  // 時刻は各市場の現地時間で判定（夏時間を自動で切り替え）
+  const shifted = {
+    ...p,
+    side,
+    entryHm: p.start,
+    exitHm: p.end,
+    days: "all",
+    tf: 5,
+    localZone: p.zone,
+  };
+  return simulateGotobi(bars, shifted, env);
 }
