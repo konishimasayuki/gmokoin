@@ -183,17 +183,27 @@ export default function App() {
   const runOptimize = useCallback(
     (apply) =>
       runJob("optimize", async () => {
-        const { symbols } = await api.get("/api/optimize");
-        for (let i = 0; i < symbols.length; i++) {
-          setOptProgress({ i: i + 1, total: symbols.length, symbol: symbols[i] });
-          try {
-            await api.post("/api/optimize", { action: "symbol", symbol: symbols[i] });
-          } catch (e) {
-            setErr(`${symbols[i]}の検証に失敗：${e.message}`);
+        // サーバーの裏で進める（画面を閉じても続く）。ここでは進み具合を見ているだけ
+        let { job } = await api.post("/api/optimize", { action: "background", apply });
+        const startedAt = job?.startedAt;
+        for (;;) {
+          if (job) {
+            setOptProgress({
+              i: Math.min(job.i + 1, job.list.length),
+              total: job.list.length,
+              symbol: job.current || job.list[job.i] || "まとめ",
+              bg: true,
+            });
           }
+          if (!job || job.status !== "running" || job.startedAt !== startedAt) break;
+          await new Promise((r) => setTimeout(r, 8000));
+          job = (await api.get("/api/optimize")).job;
         }
         setOptProgress(null);
-        const r = await api.post("/api/optimize", { action: "finalize", apply });
+        if (job?.status === "stalled")
+          setErr("検証が途中で止まりました。もう一度押すと続きから再開します");
+        for (const e of job?.errors || []) setErr(`検証に失敗：${e}`);
+        const r = await api.get("/api/optimize");
         setOptimize(r.result);
         const c = await api.get("/api/config");
         setSnap((s) => (s ? { ...s, config: c.config, optimizeStale: false } : s));
@@ -279,13 +289,17 @@ export default function App() {
       .catch(() => {});
     api
       .get("/api/optimize")
-      .then((r) => setOptimize(r.result))
+      .then((r) => {
+        setOptimize(r.result);
+        // 裏で検証が進んでいれば、進み具合の表示を再開する
+        if (r.job?.status === "running") runOptimize(r.job.apply);
+      })
       .catch(() => {});
     api
       .get("/api/config")
       .then((r) => setLock(r.lock))
       .catch(() => {});
-  }, [authed, tab]);
+  }, [authed, tab, runOptimize]);
 
   const toggleRunning = async () => {
     if (!snap) return;

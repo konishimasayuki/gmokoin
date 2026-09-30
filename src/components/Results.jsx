@@ -437,8 +437,8 @@ function Optimize({ result: raw, loading, onRun, onUse, auto, progress }) {
         <div className="progress">
           <div style={{ width: `${((progress.i - 1) / progress.total) * 100}%` }} />
           <span>
-            {progress.i}/{progress.total} {symbolLabel(progress.symbol)}{" "}
-            を検証中（初回はデータ取得で数分かかります）
+            {progress.i}/{progress.total} {symbolLabel(progress.symbol)} を検証中
+            {progress.bg ? "（サーバーで進めています。画面を閉じても続きます）" : ""}
           </span>
         </div>
       )}
