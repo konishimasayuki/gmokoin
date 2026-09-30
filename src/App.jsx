@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import ErrorBoundary from "./ErrorBoundary.jsx";
 import { api } from "./api.js";
 import Brain from "./components/Brain.jsx";
 import Home from "./components/Home.jsx";
@@ -335,41 +336,45 @@ export default function App() {
       )}
 
       <main className="content">
-        {tab === "home" && <Home snap={snap} onClose={closeNow} closing={closing} onGo={setTab} />}
-        {tab === "brain" && (
-          <Brain
-            snap={snap}
-            loading={loading}
-            onRegime={() => runRegime(true)}
-            onBrief={() => runBrief(true)}
-            onLevels={() => runLevels(true)}
-          />
-        )}
-        {tab === "results" && (
-          <Results
-            snap={snap}
-            trades={trades}
-            logs={logs}
-            reports={reports}
-            backtest={backtest}
-            optimize={optimize}
-            optProgress={optProgress}
-            onOptimize={() => runOptimize(snap?.config?.symbolMode === "auto")}
-            onUseCombo={onUseCombo}
-            loading={loading}
-            lock={lock}
-            onReport={onReport}
-            onBacktest={onBacktest}
-            onAdopt={onAdopt}
-          />
-        )}
-        {tab === "settings" && (
-          <SettingsPage
-            hasPosition={Boolean(snap?.position)}
-            onSaved={(c) => setSnap((s) => (s ? { ...s, config: c } : s))}
-            onLogout={logout}
-          />
-        )}
+        <ErrorBoundary resetKey={tab}>
+          {tab === "home" && (
+            <Home snap={snap} onClose={closeNow} closing={closing} onGo={setTab} />
+          )}
+          {tab === "brain" && (
+            <Brain
+              snap={snap}
+              loading={loading}
+              onRegime={() => runRegime(true)}
+              onBrief={() => runBrief(true)}
+              onLevels={() => runLevels(true)}
+            />
+          )}
+          {tab === "results" && (
+            <Results
+              snap={snap}
+              trades={trades}
+              logs={logs}
+              reports={reports}
+              backtest={backtest}
+              optimize={optimize}
+              optProgress={optProgress}
+              onOptimize={() => runOptimize(snap?.config?.symbolMode === "auto")}
+              onUseCombo={onUseCombo}
+              loading={loading}
+              lock={lock}
+              onReport={onReport}
+              onBacktest={onBacktest}
+              onAdopt={onAdopt}
+            />
+          )}
+          {tab === "settings" && (
+            <SettingsPage
+              hasPosition={Boolean(snap?.position)}
+              onSaved={(c) => setSnap((s) => (s ? { ...s, config: c } : s))}
+              onLogout={logout}
+            />
+          )}
+        </ErrorBoundary>
         <p className="foot-note">
           画面を開いている間だけ動きます。閉じていた間の損切り・利確は、再開時に1分足で判定します。実際の注文は出ません。
         </p>

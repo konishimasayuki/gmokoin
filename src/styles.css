@@ -1118,3 +1118,12 @@ h3 {
 .checks small {
   display: block;
 }
+
+.err {
+  white-space: pre-wrap;
+  font-size: 0.75rem;
+  background: var(--paper);
+  padding: 8px;
+  border-radius: 6px;
+  overflow-x: auto;
+}

@@ -190,7 +190,9 @@ function checkValue(key, b) {
   return `${b.neighbors.total}通り中 ${b.neighbors.ok}通りでプラス`;
 }
 
-function Optimize({ result, loading, onRun, onUse, auto, progress }) {
+function Optimize({ result: raw, loading, onRun, onUse, auto, progress }) {
+  // 旧バージョンの結果（5段階チェックなし）は表示しない
+  const result = raw?.rule?.weekWin ? raw : null;
   return (
     <Card title="AIによる銘柄・設定の自動選定">
       <p className="hint">
@@ -219,7 +221,7 @@ function Optimize({ result, loading, onRun, onUse, auto, progress }) {
           </p>
           <div className="opt-list">
             {result.results.map((r) => {
-              const b = r.best;
+              const b = r.best?.checks ? r.best : null;
               return (
                 <div
                   key={r.symbol}

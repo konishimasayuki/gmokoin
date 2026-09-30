@@ -6,7 +6,8 @@ export default async function handler(req, res) {
   if (!requireAuth(req, res)) return;
   try {
     if (req.method === "GET") {
-      return res.status(200).json({ result: await redis.get(K.optimizeLast), symbols: SYMBOLS });
+      const last = await redis.get(K.optimizeLast);
+      return res.status(200).json({ result: last?.rule?.weekWin ? last : null, symbols: SYMBOLS });
     }
     if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
     const body = req.body || {};
