@@ -15,11 +15,16 @@ import {
   stepCandle,
 } from "./strategy.js";
 import {
+  ASSET_DEFAULTS,
+  SYMBOLS,
+  assetOf,
   businessDate,
+  cfgFor,
   feeOf,
   mergeConfig,
   pipSize,
   pnlYen,
+  portfolioOf,
   priceDigits,
   quoteToJpy,
   round,
@@ -304,9 +309,20 @@ export async function marketContext(symbol) {
   return { conv, tickers };
 }
 
-export async function runBacktest({ days = 5, spreadPips } = {}) {
+export async function runBacktest({ days = 5, spreadPips, symbol: want } = {}) {
   const now = Date.now();
-  const cfg = mergeConfig(await redis.get(K.config));
+  const base = mergeConfig(await redis.get(K.config));
+  // 指定銘柄（ポートフォリオ内なら、その銘柄で検証済みの設定）で再生する
+  const item = portfolioOf(base).find((p) => p.symbol === want);
+  let cfg = base;
+  if (item) cfg = cfgFor(base, item);
+  else if (want && SYMBOLS.includes(want) && want !== base.symbol) {
+    cfg = {
+      ...base,
+      ...(assetOf(want) !== assetOf(base.symbol) ? ASSET_DEFAULTS[assetOf(want)] : {}),
+      symbol: want,
+    };
+  }
   const symbol = cfg.symbol;
   const digits = priceDigits(symbol);
   const { conv } = await marketContext(symbol);

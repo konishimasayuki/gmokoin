@@ -51,6 +51,11 @@ export const DEFAULT_CONFIG = {
   symbolMode: "auto", // auto=検証結果から自動で銘柄と設定を選ぶ / manual
   autoBlocked: false, // 自動選定で合格がなかったとき true（新規エントリー停止）
   autoPickAt: null,
+  // ポートフォリオ（AIおまかせ時に、合格した銘柄と各銘柄の設定が入る）
+  portfolio: [],
+  maxSymbols: 5, // 採用する銘柄数の上限
+  maxPositions: 3, // 同時に持つポジション数の上限
+  maxSameCurrency: 2, // 同じ通貨を同じ向きに持つ数の上限（円売りが重なりすぎないように）
 };
 
 export const BOOLEAN_KEYS = ["running", "feeOn", "htfFilter", "beOn", "levelFilter"];
@@ -73,6 +78,9 @@ export const TUNED_KEYS = [
 
 // 増やすとリスクが上がる項目（損失中・連敗中はロック）
 export const RISK_UP_KEYS = [
+  "maxPositions",
+  "maxSameCurrency",
+  "cryptoNotional",
   "units",
   "riskPct",
   "maxUnits",
@@ -108,6 +116,9 @@ export const NUMERIC_LIMITS = {
   maxUnits: [10000, 1000000],
   minRr: [0.3, 5],
   cryptoNotional: [10000, 100000000],
+  maxSymbols: [1, 11],
+  maxPositions: [1, 11],
+  maxSameCurrency: [1, 11],
 };
 
 const JST = 9 * 3600 * 1000;
@@ -223,3 +234,38 @@ export function mergeConfig(stored) {
 }
 
 export const MIN_UNITS = 10000;
+
+// 動かす銘柄の一覧（おまかせ時は検証に合格した銘柄、手動時は選んだ1銘柄）
+export function portfolioOf(cfg) {
+  if (cfg.symbolMode !== "auto") return [{ symbol: cfg.symbol, params: {} }];
+  if (Array.isArray(cfg.portfolio) && cfg.portfolio.length) {
+    return cfg.portfolio.filter((p) => SYMBOLS.includes(p?.symbol));
+  }
+  // 旧形式（1銘柄だけ採用していた頃）
+  if (cfg.autoPickAt && !cfg.autoBlocked) return [{ symbol: cfg.symbol, params: {} }];
+  return [];
+}
+
+// 銘柄ごとの実効設定（共通設定＋その銘柄で検証済みの設定）
+export function cfgFor(cfg, item) {
+  const p = item?.params || {};
+  const a = assetOf(item.symbol);
+  const spread = a === assetOf(cfg.symbol) ? cfg.maxSpreadPips : ASSET_DEFAULTS[a].maxSpreadPips;
+  return {
+    ...cfg,
+    maxSpreadPips: spread,
+    ...p,
+    symbol: item.symbol,
+    sessions: { ...cfg.sessions, ...(p.sessions || {}) },
+  };
+}
+
+// 通貨ごとの向き（BUY USD_JPY = USD買い・JPY売り）
+export function legsOf(symbol, side) {
+  const [base, quote] = symbol.split("_");
+  const d = side === "BUY" ? 1 : -1;
+  return [
+    [base, d],
+    [quote, -d],
+  ];
+}

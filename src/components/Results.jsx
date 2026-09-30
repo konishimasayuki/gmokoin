@@ -193,6 +193,10 @@ function checkValue(key, b) {
 function Optimize({ result: raw, loading, onRun, onUse, auto, progress }) {
   // 旧バージョンの結果（5段階チェックなし）は表示しない
   const result = raw?.rule?.weekWin ? raw : null;
+  const inPort = (sym) =>
+    result?.portfolio
+      ? result.portfolio.some((p) => p.symbol === sym)
+      : result?.pick?.symbol === sym;
   return (
     <Card title="AIによる銘柄・設定の自動選定">
       <p className="hint">
@@ -214,19 +218,39 @@ function Optimize({ result: raw, loading, onRun, onUse, auto, progress }) {
         <>
           <p className="meta">
             {mdhm(result.at)} 実行
-            {result.applied?.status === "applied" &&
-              `・${symbolLabel(result.applied.symbol)}に切り替えました`}
+            {result.applied?.status === "applied" && "・合格した銘柄をすべて採用しました"}
             {result.applied?.status === "blocked" && "・合格なしのため取引を止めています"}
-            {result.applied?.status === "skipped" && `・${result.applied.why}`}
           </p>
+          {result.portfolio?.length > 0 && result.combined && (
+            <div className="port-box">
+              <b>採用：{result.portfolio.map((p) => symbolLabel(p.symbol)).join("・")}</b>
+              <small>組み合わせた場合の{result.totalDays}日間（概算）</small>
+              <div className="metrics">
+                <Metric
+                  label="損益"
+                  value={yen(result.combined.net)}
+                  tone={tone(result.combined.net)}
+                  sub={`${result.combined.trades}回`}
+                />
+                <Metric
+                  label="PF"
+                  value={result.combined.pf}
+                  sub={`勝率${result.combined.winRate}%`}
+                />
+                <Metric
+                  label="最大DD"
+                  value={`${result.combined.maxDd.toLocaleString("ja-JP")}円`}
+                  sub={`マイナス確率${Math.round(result.combined.mc.lossProb * 100)}%`}
+                />
+              </div>
+              <Spark points={result.combined.curve} height={90} />
+            </div>
+          )}
           <div className="opt-list">
             {result.results.map((r) => {
               const b = r.best?.checks ? r.best : null;
               return (
-                <div
-                  key={r.symbol}
-                  className={`opt ${result.pick?.symbol === r.symbol ? "picked" : ""}`}
-                >
+                <div key={r.symbol} className={`opt ${inPort(r.symbol) ? "picked" : ""}`}>
                   <div className="opt-head">
                     <b>{symbolLabel(r.symbol)}</b>
                     {r.error ? (
@@ -236,7 +260,7 @@ function Optimize({ result: raw, loading, onRun, onUse, auto, progress }) {
                     ) : (
                       <Badge tone="sell">{b ? `${b.passed}/5` : "0/5"}</Badge>
                     )}
-                    {result.pick?.symbol === r.symbol && <Badge tone="brass">採用</Badge>}
+                    {inPort(r.symbol) && <Badge tone="brass">採用</Badge>}
                     {r.stale && <Badge>古い結果</Badge>}
                   </div>
                   {b ? (
@@ -284,14 +308,14 @@ function Optimize({ result: raw, loading, onRun, onUse, auto, progress }) {
   );
 }
 
-function Backtest({ result, loading, onRun }) {
+function Backtest({ result, loading, onRun, symbol }) {
   const [days, setDays] = useState(5);
   const [spread, setSpread] = useState("");
   const m = result?.metrics;
   return (
-    <Card title="バックテスト">
+    <Card title={`バックテスト${symbol ? `（${symbolLabel(symbol)}）` : ""}`}>
       <p className="hint">
-        過去の1分足で、今の設定のルールを再生します。相場判定はClaudeの代わりに機械的な判定を使います。
+        ホームで選んでいる銘柄を、その銘柄の設定で過去の1分足に当てて再生します。相場判定はClaudeの代わりに機械的な判定を使います。
       </p>
       <div className="bt-form">
         <label>
@@ -368,6 +392,7 @@ function History({ trades, logs }) {
                 <span className="meta num">{mdhm(t.closedAt)}</span>
                 <b className={t.side === "BUY" ? "up" : "down"}>{SIDE_JP[t.side]}</b>
                 <span className="grow">
+                  {t.symbol ? `${symbolLabel(t.symbol)}・` : ""}
                   {t.setup}
                   <small>{t.reason}</small>
                 </span>
@@ -449,7 +474,12 @@ export default function Results(props) {
             auto={props.snap?.config?.symbolMode === "auto"}
             progress={props.optProgress}
           />
-          <Backtest result={props.backtest} loading={props.loading} onRun={props.onBacktest} />
+          <Backtest
+            result={props.backtest}
+            loading={props.loading}
+            onRun={props.onBacktest}
+            symbol={props.focus}
+          />
         </>
       )}
       {tab === "history" && <History trades={props.trades} logs={props.logs} />}

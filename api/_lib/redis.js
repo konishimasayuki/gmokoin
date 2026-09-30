@@ -32,6 +32,10 @@ export const K = {
   btDay: (symbol, bd) => `fxbot:bt2:${symbol}:${bd}`,
   optimizeLast: "fxbot:optimize:last",
   optSymbol: (symbol) => `fxbot:opt:sym:${symbol}`,
+  posOf: (symbol) => `fxbot:pos:${symbol}`,
+  openSet: "fxbot:open_symbols",
+  cooldownOf: (symbol) => `fxbot:cooldown:${symbol}`,
+  lastSignalOf: (symbol) => `fxbot:last_signal:${symbol}`,
   optimizeLock: "fxbot:lock:optimize",
 };
 

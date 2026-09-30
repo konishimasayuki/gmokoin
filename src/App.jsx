@@ -41,6 +41,13 @@ function Login({ onDone }) {
   );
 }
 
+function makeTickUrl(full, focus) {
+  const q = [];
+  if (full) q.push("full=1");
+  if (focus) q.push(`focus=${focus}`);
+  return `/api/tick${q.length ? `?${q.join("&")}` : ""}`;
+}
+
 const TABS = [
   ["home", "ホーム", "M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"],
   [
@@ -78,12 +85,26 @@ export default function App() {
     backtest: false,
   });
   const tickSecRef = useRef(5);
+  const [focus, setFocus] = useState(null);
+  const focusRef = useRef(null);
   const busyRef = useRef({});
   const autoRef = useRef({ brief: false, levels: false, optimize: false });
 
   const flash = (t) => {
     setToast(t);
     setTimeout(() => setToast(""), 2600);
+  };
+
+  const tickUrl = (full) => makeTickUrl(full, focusRef.current);
+
+  // 銘柄を切り替えたら、その銘柄のチャートと水平線をすぐ取り直す
+  const pickFocus = (sym) => {
+    focusRef.current = sym;
+    setFocus(sym);
+    api
+      .post(tickUrl(true))
+      .then((s) => mergeSnap(s))
+      .catch(() => {});
   };
 
   const mergeSnap = useCallback((s) => {
@@ -132,7 +153,7 @@ export default function App() {
   const runLevels = useCallback(
     (force) =>
       runJob("levels", async () => {
-        const r = await api.post("/api/levels", { force });
+        const r = await api.post("/api/levels", { force, focus: focusRef.current });
         if (r.levels) setSnap((s) => (s ? { ...s, levels: r.levels, levelsStale: false } : s));
       }),
     [runJob],
@@ -179,7 +200,7 @@ export default function App() {
       clearTimeout(timer);
       try {
         if (document.visibilityState === "visible") {
-          const s = await api.post(`/api/tick${n % 6 === 0 ? "?full=1" : ""}`);
+          const s = await api.post(makeTickUrl(n % 6 === 0, focusRef.current));
           if (!alive) return;
           mergeSnap(s);
           setErr("");
@@ -193,7 +214,7 @@ export default function App() {
               autoRef.current.levels = true;
               runLevels(false);
             }
-            if (s.optimizeStale && !s.position && !autoRef.current.optimize) {
+            if (s.optimizeStale && !autoRef.current.optimize) {
               autoRef.current.optimize = true;
               runOptimize(true);
             }
@@ -253,12 +274,13 @@ export default function App() {
     }
   };
 
-  const closeNow = async () => {
-    if (!window.confirm("このポジションを今のレートで決済しますか？")) return;
+  const closeNow = async (symbol) => {
+    if (!window.confirm(`${symbol.replace("_", "/")}のポジションを今のレートで決済しますか？`))
+      return;
     setClosing(true);
     try {
-      await api.post("/api/close");
-      mergeSnap(await api.post("/api/tick?full=1"));
+      await api.post("/api/close", { symbol });
+      mergeSnap(await api.post(tickUrl(true)));
       flash("決済しました");
     } catch (e) {
       setErr(e.message);
@@ -275,7 +297,11 @@ export default function App() {
 
   const onBacktest = (days, spreadPips) =>
     runJob("backtest", async () => {
-      const r = await api.post("/api/backtest", { days, spreadPips: spreadPips || undefined });
+      const r = await api.post("/api/backtest", {
+        days,
+        spreadPips: spreadPips || undefined,
+        symbol: focusRef.current || snap?.focus,
+      });
       setBacktest(r.result);
     });
 
@@ -338,10 +364,19 @@ export default function App() {
       <main className="content">
         <ErrorBoundary resetKey={tab}>
           {tab === "home" && (
-            <Home snap={snap} onClose={closeNow} closing={closing} onGo={setTab} />
+            <Home
+              snap={snap}
+              onClose={closeNow}
+              closing={closing}
+              onGo={setTab}
+              focus={focus}
+              onFocus={pickFocus}
+            />
           )}
           {tab === "brain" && (
             <Brain
+              focus={focus}
+              onFocus={pickFocus}
               snap={snap}
               loading={loading}
               onRegime={() => runRegime(true)}
@@ -351,6 +386,7 @@ export default function App() {
           )}
           {tab === "results" && (
             <Results
+              focus={focus || snap?.focus}
               snap={snap}
               trades={trades}
               logs={logs}
@@ -369,7 +405,7 @@ export default function App() {
           )}
           {tab === "settings" && (
             <SettingsPage
-              hasPosition={Boolean(snap?.position)}
+              hasPosition={Boolean(snap?.totals?.open)}
               onSaved={(c) => setSnap((s) => (s ? { ...s, config: c } : s))}
               onLogout={logout}
             />
@@ -395,7 +431,7 @@ export default function App() {
               <path d={d} />
             </svg>
             <span>{label}</span>
-            {k === "home" && snap?.position && <em className="dot" />}
+            {k === "home" && snap?.totals?.open > 0 && <em className="dot" />}
           </button>
         ))}
       </nav>

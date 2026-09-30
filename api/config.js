@@ -60,8 +60,6 @@ export default async function handler(req, res) {
     if (body.symbol !== undefined && body.symbol !== cur.symbol) {
       if (!SYMBOLS.includes(body.symbol))
         return res.status(400).json({ error: "対応していない銘柄です" });
-      const pos = await redis.get(K.position);
-      if (pos) return res.status(409).json({ error: "ポジション保有中は銘柄を変更できません" });
       next.symbol = body.symbol;
       symbolChanged = true;
       // FX⇔仮想通貨をまたぐときは単位が違うので既定値に戻す（明示指定があればそちら）

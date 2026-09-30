@@ -9,9 +9,13 @@ export default async function handler(req, res) {
       return res.status(200).json({ result: await redis.get(K.backtestLast) });
     if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
     const days = Math.min(90, Math.max(1, Math.round(Number(req.body?.days) || 5)));
-    return res
-      .status(200)
-      .json({ result: await runBacktest({ days, spreadPips: req.body?.spreadPips }) });
+    return res.status(200).json({
+      result: await runBacktest({
+        days,
+        spreadPips: req.body?.spreadPips,
+        symbol: req.body?.symbol,
+      }),
+    });
   } catch (e) {
     return sendError(res, e, 502);
   }

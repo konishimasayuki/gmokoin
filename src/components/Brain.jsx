@@ -1,4 +1,4 @@
-import { ALLOW_JP, CRITIC_JP, MODE_JP, hm, price } from "../format.js";
+import { ALLOW_JP, CRITIC_JP, MODE_JP, hm, price, symbolLabel } from "../format.js";
 import { Badge, Card, Empty } from "./ui.jsx";
 
 function List({ items }) {
@@ -15,6 +15,11 @@ function List({ items }) {
 function Team({ snap }) {
   const r = snap?.regime;
   const b = snap?.brief;
+  const syms = Object.values(r?.symbols || {});
+  const go = syms.filter((x) => x.mode !== "NO_TRADE").length;
+  const critics = syms.filter((x) => x.critic);
+  const veto = critics.filter((x) => x.critic.verdict === "VETO").length;
+  const blocked = (snap?.rows || []).filter((x) => x.decision?.state === "blocked").length;
   const members = [
     {
       name: "ファンダ担当",
@@ -24,23 +29,26 @@ function Team({ snap }) {
     },
     {
       name: "議長",
-      role: "チャートとファンダを統合",
-      state: r
-        ? `${MODE_JP[r.chairMode || r.mode]}（${r.chairConfidence ?? r.confidence}%）`
-        : "未判定",
+      role: "全銘柄のチャートとファンダを統合",
+      state:
+        r && !r.error ? `${syms.length}銘柄中 ${go}銘柄で取引可` : r?.error ? "判定失敗" : "未判定",
       ok: Boolean(r && !r.error),
     },
     {
       name: "反論役",
       role: "弱点と見落としを指摘",
-      state: r?.critic ? CRITIC_JP[r.critic.verdict] : r ? "出番なし（見送り）" : "—",
-      ok: Boolean(r?.critic),
+      state: critics.length
+        ? `${critics.length}銘柄を審査・却下${veto}`
+        : r
+          ? "出番なし（見送り）"
+          : "—",
+      ok: critics.length > 0,
     },
     {
       name: "リスク管理",
-      role: "固定ルールで最終チェック",
-      state: snap?.decision?.state === "blocked" ? "ブロック中" : "監視中",
-      ok: snap?.decision?.state !== "blocked",
+      role: "固定ルールと通貨の偏りを最終チェック",
+      state: blocked ? `${blocked}銘柄をブロック中` : "監視中",
+      ok: !blocked,
     },
   ];
   return (
@@ -103,69 +111,108 @@ function Ladder({ levels, digits, mid }) {
   );
 }
 
-export default function Brain({ snap, loading, onRegime, onBrief, onLevels }) {
-  const r = snap?.regime;
+export default function Brain({ snap, loading, onRegime, onBrief, onLevels, focus, onFocus }) {
+  const reg = snap?.regime;
   const b = snap?.brief;
-  const lv = snap?.levels;
-  const d = snap?.digits ?? 3;
-  const mid = snap?.market ? (snap.market.bid + snap.market.ask) / 2 : null;
+  const rows = snap?.rows || [];
+  const curRow = rows.find((x) => x.symbol === (focus || snap?.focus)) || rows[0];
+  const d = curRow?.digits ?? 3;
+  const mid = curRow?.bid ? (curRow.bid + curRow.ask) / 2 : null;
+  const r = reg?.symbols?.[curRow?.symbol] || null;
+  const lv = snap?.levels?.symbol === curRow?.symbol ? snap.levels : null;
 
   return (
     <>
       <Card title="AIチーム">
         <Team snap={snap} />
         <p className="hint">
-          ファンダ担当が朝に材料を整理し、議長が15分ごとに方針を決め、反論役がそれを突きます。最後はプログラムのルールが売買を判断します。
+          ファンダ担当が朝に材料を整理し、議長が15分ごとに全銘柄の方針をまとめて決め、反論役がそれを突きます。最後はプログラムのルールが、同時に持つ数と通貨の偏りを守って売買します。
         </p>
       </Card>
 
       <Card
-        title="議長の判定"
+        title="銘柄ごとの判定"
         action={
           <button type="button" className="ghost" onClick={onRegime} disabled={loading.regime}>
             {loading.regime ? "判定中…" : "今すぐ再判定"}
           </button>
         }
       >
-        {!r ? (
+        {!reg ? (
           <Empty>
             {loading.regime ? "チャートとニュースを確認しています…" : "まだ判定がありません。"}
           </Empty>
         ) : (
           <>
-            <div className={`mode mode-${r.mode}`}>
-              <b>{MODE_JP[r.mode]}</b>
-              <span>
-                {ALLOW_JP[r.allow]}・確信度 {r.confidence}%
-                {r.chairMode && r.chairMode !== r.mode ? `（議長は${MODE_JP[r.chairMode]}）` : ""}
-              </span>
+            {reg.summary && <p className="summary">{reg.summary}</p>}
+            <div className="srows">
+              {rows
+                .filter((x) => x.inPortfolio)
+                .map((x) => {
+                  const v = reg.symbols?.[x.symbol];
+                  return (
+                    <button
+                      type="button"
+                      key={x.symbol}
+                      className={`srow ${x.symbol === curRow?.symbol ? "on" : ""}`}
+                      onClick={() => onFocus(x.symbol)}
+                    >
+                      <div className="srow-top">
+                        <b>{symbolLabel(x.symbol)}</b>
+                        {v ? (
+                          <span className={`mode-chip mode-${v.mode}`}>
+                            {MODE_JP[v.mode]}
+                            {v.mode !== "NO_TRADE" ? ` ${v.confidence}%` : ""}
+                          </span>
+                        ) : (
+                          <Badge>判定なし</Badge>
+                        )}
+                        {v?.critic && (
+                          <Badge
+                            tone={
+                              v.critic.verdict === "VETO"
+                                ? "sell"
+                                : v.critic.verdict === "WEAKEN"
+                                  ? "brass"
+                                  : "buy"
+                            }
+                          >
+                            反論役：{CRITIC_JP[v.critic.verdict]}
+                          </Badge>
+                        )}
+                      </div>
+                      {v?.summary && <div className="srow-bottom srow-state">{v.summary}</div>}
+                    </button>
+                  );
+                })}
             </div>
-            {r.summary && <p className="summary">{r.summary}</p>}
-            {r.technical?.length > 0 && <h3>テクニカル</h3>}
-            <List items={r.technical} />
-            {r.fundamental?.length > 0 && <h3>ファンダメンタル</h3>}
-            <List items={r.fundamental} />
-            {r.reasons?.length > 0 && <h3>総合</h3>}
-            <List items={r.reasons} />
-            {r.events?.length > 0 && (
-              <div className="events">
-                {r.events.map((e) => (
-                  <div key={`${e.time_jst}${e.name}`} className={`event ${e.impact}`}>
-                    <b className="num">{e.time_jst}</b>
-                    <span>{e.name}</span>
-                  </div>
-                ))}
-              </div>
-            )}
             <p className="meta">
-              {hm(r.at)} 判定{snap?.regimeStale ? "（更新待ち）" : ""}
-              {r.pauseUntilTs ? `・${hm(r.pauseUntilTs)}まで停止` : ""}
+              {hm(reg.at)} 判定{snap?.regimeStale ? "（更新待ち）" : ""}
             </p>
           </>
         )}
       </Card>
 
-      <Card title="反論役のチェック">
+      {r && (
+        <Card title={`${symbolLabel(curRow.symbol)} の判定理由`}>
+          <div className={`mode mode-${r.mode}`}>
+            <b>{MODE_JP[r.mode]}</b>
+            <span>
+              {ALLOW_JP[r.allow]}・確信度 {r.confidence}%
+              {r.chairMode && r.chairMode !== r.mode ? `（議長は${MODE_JP[r.chairMode]}）` : ""}
+            </span>
+          </div>
+          {r.technical?.length > 0 && <h3>テクニカル</h3>}
+          <List items={r.technical} />
+          {r.fundamental?.length > 0 && <h3>ファンダメンタル</h3>}
+          <List items={r.fundamental} />
+          {r.reasons?.length > 0 && <h3>総合</h3>}
+          <List items={r.reasons} />
+          {r.pauseUntilTs ? <p className="meta">{hm(r.pauseUntilTs)}まで停止</p> : null}
+        </Card>
+      )}
+
+      <Card title={`反論役のチェック${curRow ? `（${symbolLabel(curRow.symbol)}）` : ""}`}>
         {!r?.critic ? (
           <Empty>議長が「見送り」のときは出番がありません。</Empty>
         ) : (
@@ -259,7 +306,7 @@ export default function Brain({ snap, loading, onRegime, onBrief, onLevels }) {
       </Card>
 
       <Card
-        title="水平線マップ"
+        title={`水平線マップ${curRow ? `（${symbolLabel(curRow.symbol)}）` : ""}`}
         action={
           <button type="button" className="ghost" onClick={onLevels} disabled={loading.levels}>
             {loading.levels ? "計算中…" : "更新"}

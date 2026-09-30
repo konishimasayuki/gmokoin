@@ -1127,3 +1127,100 @@ h3 {
   border-radius: 6px;
   overflow-x: auto;
 }
+
+/* ポートフォリオ */
+.summary-card .metrics b {
+  font-size: 1.25rem;
+}
+.srows {
+  display: grid;
+  gap: 6px;
+}
+.srow {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+.srow.on {
+  border-color: var(--ink);
+  box-shadow: inset 3px 0 0 var(--ink);
+}
+.srow-top {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.srow-top b {
+  font-size: 0.95rem;
+}
+.srow-price {
+  margin-left: auto;
+  font-size: 1.1rem;
+}
+.srow-bottom {
+  font-size: 0.8rem;
+}
+.srow-state {
+  color: var(--muted);
+}
+.srow-state.watching {
+  color: var(--ink);
+}
+.srow-state.entered,
+.srow-state.holding {
+  color: var(--brass);
+}
+.mode-chip {
+  font-size: 0.72rem;
+  padding: 0 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+.mode-chip.mode-TREND_UP {
+  color: var(--buy);
+  border-color: color-mix(in srgb, var(--buy) 50%, var(--line));
+}
+.mode-chip.mode-TREND_DOWN {
+  color: var(--sell);
+  border-color: color-mix(in srgb, var(--sell) 50%, var(--line));
+}
+.mode-chip.mode-RANGE {
+  color: var(--brass);
+  border-color: color-mix(in srgb, var(--brass) 50%, var(--line));
+}
+
+.port-box {
+  border: 1px solid var(--brass);
+  border-radius: 10px;
+  padding: 10px;
+  margin: 8px 0;
+  display: grid;
+  gap: 6px;
+}
+.port-box small {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+.port-list {
+  list-style: none;
+  padding: 0;
+  margin: 6px 0;
+  display: grid;
+  gap: 6px;
+}
+.port-list li {
+  border-left: 3px solid var(--brass);
+  padding-left: 8px;
+}
+.port-list small {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--muted);
+}

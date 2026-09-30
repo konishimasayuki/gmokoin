@@ -1,7 +1,14 @@
 // 毎朝のブリーフ：ファンダ担当＋事実確認担当
 import { arr, askClaude } from "./claude.js";
 import { K, acquireLock, addLog, redis } from "./redis.js";
-import { businessDate, businessHmToTs, isCrypto, jstLabel, mergeConfig } from "./util.js";
+import {
+  businessDate,
+  businessHmToTs,
+  isCrypto,
+  jstLabel,
+  mergeConfig,
+  portfolioOf,
+} from "./util.js";
 
 const SYSTEM = `あなたはFX自動売買システムの「ファンダメンタル担当」兼「事実確認担当」です。
 - 役割は、今日の取引に影響する経済指標とニュースを、事実ベースで整理すること。売買の指示は出さない。
@@ -10,46 +17,55 @@ const SYSTEM = `あなたはFX自動売買システムの「ファンダメン�
 - 指標の典型的な値動き（予想比上振れならどちらに動きやすいか等）は一般論として簡潔に。
 - 時刻はすべて日本時間(JST)の "HH:MM"。`;
 
-function prompt({ symbol, now, bd }) {
-  const [base, quote] = symbol.split("_");
-  const crypto = isCrypto(symbol);
+function prompt({ symbols, now, bd }) {
+  const fx = symbols.filter((s) => !isCrypto(s));
+  const crypto = symbols.filter(isCrypto);
+  const currencies = [...new Set(fx.flatMap((s) => s.split("_")))];
+  const coins = crypto.map((s) => s.split("_")[0]);
   return `# 対象
-銘柄: ${base}/${quote}
+監視中の銘柄: ${symbols.map((s) => s.replace("_", "/")).join("、") || "なし"}
 現在: ${jstLabel(now)}（取引日 ${bd}、日本時間6:00区切り）
 
 # やること
-1. web_searchで、今日（取引日内）と今週の ${crypto ? "米国の重要経済指標（CPI・雇用統計・FOMCなど、暗号資産も大きく動くもの）" : `${base}・${quote} 関連の重要経済指標`}を調べる（発表時刻JST、予想、前回）。
-2. 直近24時間の${crypto ? `${base}に関するニュース（ETFの資金流出入、規制、取引所・ハッキング、大口の送金など）と要人発言` : "要人発言・中銀・地政学などのニュース"}を調べ、事実関係を確認する。
-3. 各ニュースを「確認済み／未確認／誇張の可能性」に分類する。
+1. web_searchで、今日（取引日内）と今週の重要経済指標を調べる（発表時刻JST、予想、前回、通貨）。対象通貨: ${currencies.join("・") || "なし"}${coins.length ? "。暗号資産にも効く米国指標（CPI・雇用統計・FOMCなど）も含める" : ""}。
+2. 直近24時間の要人発言・中銀・地政学のニュース${coins.length ? `と、${coins.join("・")}に関するニュース（ETFの資金流出入、規制、取引所・ハッキング、大口の送金など）` : ""}を調べ、事実関係を確認する。
+3. 各ニュースを「確認済み／未確認／誇張の可能性」に分類する。検索は最大6回。
 
 # 出力（JSONのみ）
 {"summary":"今日の地合いを80字以内で","events":[{"time_jst":"HH:MM","name":"指標名","currency":"USD","impact":"high|medium","forecast":"予想","previous":"前回","typical_reaction":"上振れ時の典型的な反応"}],"week_events":[{"day":"10/2(木)","time_jst":"HH:MM","name":"指標名","impact":"high|medium"}],"news":[{"fact":"事実だけを簡潔に","source":"出所","status":"確認済み|未確認|誇張の可能性"}],"caution":"特に注意すべき点"}`;
 }
 
-export function briefStale(brief, now) {
-  return !brief || brief.bd !== businessDate(now);
+// 取引日が変わった、または監視銘柄がブリーフに含まれていなければ作り直す
+export function briefStale(brief, now, symbols = []) {
+  if (!brief || brief.bd !== businessDate(now)) return true;
+  const have = new Set(brief.symbols || [brief.symbol]);
+  return symbols.some((s) => !have.has(s));
 }
 
 export async function runBrief({ force = false } = {}) {
   const now = Date.now();
   const bd = businessDate(now);
   const cfg = mergeConfig(await redis.get(K.config));
-  const key = K.brief(cfg.symbol, bd);
+  const symbols = portfolioOf(cfg).map((p) => p.symbol);
+  if (!symbols.length) symbols.push(cfg.symbol);
+  const key = K.brief("ALL", bd);
   const cur = await redis.get(key);
-  if (cur && !force) return { brief: cur, skipped: true };
+  if (cur && !force && !briefStale(cur, now, symbols)) return { brief: cur, skipped: true };
   const ok = await acquireLock(K.briefLock, 200);
   if (!ok) return { brief: cur, busy: true };
   try {
     const { json, model } = await askClaude({
       system: SYSTEM,
-      prompt: prompt({ symbol: cfg.symbol, now, bd }),
-      searches: 5,
+      prompt: prompt({ symbols, now, bd }),
+      searches: 6,
       maxTokens: 3000,
     });
-    const events = (Array.isArray(json.events) ? json.events : []).slice(0, 10).map((e) => ({
+    const events = (Array.isArray(json.events) ? json.events : []).slice(0, 14).map((e) => ({
       time_jst: String(e?.time_jst || ""),
       name: String(e?.name || "").slice(0, 60),
-      currency: String(e?.currency || "").slice(0, 6),
+      currency: String(e?.currency || "")
+        .toUpperCase()
+        .slice(0, 6),
       impact: e?.impact === "high" ? "high" : "medium",
       forecast: String(e?.forecast ?? "").slice(0, 30),
       previous: String(e?.previous ?? "").slice(0, 30),
@@ -57,7 +73,7 @@ export async function runBrief({ force = false } = {}) {
       ts: businessHmToTs(e?.time_jst, bd),
     }));
     const brief = {
-      symbol: cfg.symbol,
+      symbols,
       bd,
       at: now,
       model,

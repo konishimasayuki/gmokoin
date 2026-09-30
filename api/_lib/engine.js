@@ -1,3 +1,4 @@
+// ポートフォリオ運用エンジン：複数銘柄を同時に監視し、条件がそろった銘柄から入る
 import { briefStale } from "./brief.js";
 import { closedOnly, getCachedKlines, getTickers } from "./gmo.js";
 import { computeScalpIndicators } from "./indicators.js";
@@ -17,13 +18,17 @@ import {
   stepCandle,
 } from "./strategy.js";
 import {
+  SYMBOLS,
   businessDate,
+  cfgFor,
   feeOf,
   isCrypto,
   jstHM,
+  legsOf,
   mergeConfig,
   pipSize,
   pnlYen,
+  portfolioOf,
   priceDigits,
   quoteToJpy,
   round,
@@ -34,6 +39,7 @@ export const EMPTY_DAILY = { pnl: 0, trades: 0, wins: 0 };
 export const EMPTY_STATS = { net: 0, trades: 0, wins: 0, grossWin: 0, grossLoss: 0, fees: 0 };
 const SIDE_JP = { BUY: "買い", SELL: "売り" };
 const MIN = 60000;
+const label = (s) => s.replace("_", "/");
 
 export function regimeFreshness(regime, cfg, now) {
   if (!regime) return { stale: true, expired: true };
@@ -42,12 +48,30 @@ export function regimeFreshness(regime, cfg, now) {
   return { stale: age >= iv, expired: age >= iv * 2 };
 }
 
+// 銘柄ごとのAI判定（旧形式の1銘柄判定にも対応）
+export function regimeOf(regime, symbol) {
+  if (!regime) return null;
+  if (regime.symbols) return regime.symbols[symbol] || null;
+  return regime.symbol === symbol ? regime : null;
+}
+
 function no(why, waiting = false) {
   return { ok: false, why, waiting };
 }
 
-// ---- 決済
-async function closeTrade({ pos, exit, reason, closedAt, cfg, conv, daily, stats, streak }) {
+// 為替・仮想通貨のレートをまとめて取得
+async function fetchTickers(symbols) {
+  const needFx = symbols.some((s) => !isCrypto(s));
+  const needCrypto = symbols.some(isCrypto);
+  const [fx, cr] = await Promise.all([
+    needFx ? getTickers() : Promise.resolve({}),
+    needCrypto ? getTickers("BTC_JPY") : Promise.resolve({}),
+  ]);
+  return { ...fx, ...cr };
+}
+
+// ---- 決済（口座全体の成績も更新して返す）
+async function closeTrade({ pos, exit, reason, closedAt, cfg, conv, acct }) {
   const pip = pos.pip || pipSize(pos.symbol, pos.entry);
   const dir = pos.side === "BUY" ? 1 : -1;
   const pips = round((dir * (exit - pos.entry)) / pip, 1);
@@ -73,16 +97,18 @@ async function closeTrade({ pos, exit, reason, closedAt, cfg, conv, daily, stats
     closedAt,
     reason,
     pips,
+    unit: unitLabel(pos.symbol),
     gross,
     fee,
     net,
   };
-  const nd = {
+  const { daily, stats } = acct;
+  acct.daily = {
     pnl: daily.pnl + net,
     trades: daily.trades + 1,
     wins: daily.wins + (net > 0 ? 1 : 0),
   };
-  const ns = {
+  acct.stats = {
     net: stats.net + net,
     trades: stats.trades + 1,
     wins: stats.wins + (net > 0 ? 1 : 0),
@@ -90,37 +116,44 @@ async function closeTrade({ pos, exit, reason, closedAt, cfg, conv, daily, stats
     grossLoss: stats.grossLoss + (net < 0 ? -net : 0),
     fees: stats.fees + fee,
   };
-  let losses = net < 0 ? (streak?.losses || 0) + 1 : 0;
+  let losses = net < 0 ? (acct.streak?.losses || 0) + 1 : 0;
   let pauseUntil = null;
   if (losses >= cfg.lossStreakMax && cfg.lossStreakPauseMin > 0) {
     pauseUntil = closedAt + cfg.lossStreakPauseMin * MIN;
     losses = 0;
   }
+  acct.streak = { losses, lastAt: closedAt };
+  if (pauseUntil) acct.pauseUntil = pauseUntil;
   const p = redis
     .pipeline()
     .set(K.trade(pos.id), trade, { ex: 60 * 60 * 24 * 120 })
     .lpush(K.tradeIds, pos.id)
     .ltrim(K.tradeIds, 0, 499)
-    .set(K.daily(bd), nd, { ex: 60 * 60 * 24 * 30 })
+    .set(K.daily(bd), acct.daily, { ex: 60 * 60 * 24 * 30 })
     .sadd(K.dailyKeys, K.daily(bd))
-    .set(K.stats, ns)
-    .set(K.streak, { losses, lastAt: closedAt })
-    .del(K.position);
-  if (cfg.cooldownSec >= 1) p.set(K.cooldown, closedAt, { ex: Math.round(cfg.cooldownSec) });
+    .set(K.stats, acct.stats)
+    .set(K.streak, acct.streak)
+    .del(K.posOf(pos.symbol))
+    .srem(K.openSet, pos.symbol);
+  if (cfg.cooldownSec >= 1)
+    p.set(K.cooldownOf(pos.symbol), closedAt, { ex: Math.round(cfg.cooldownSec) });
   if (pauseUntil)
     p.set(K.pauseUntil, pauseUntil, { ex: Math.ceil((pauseUntil - closedAt) / 1000) });
   await p.exec();
   const sign = net >= 0 ? "+" : "";
   await addLog(
-    `${SIDE_JP[pos.side]}決済（${reason}）${sign}${pips}pips / ${sign}${net.toLocaleString("ja-JP")}円`,
+    `${label(pos.symbol)} ${SIDE_JP[pos.side]}決済（${reason}）${sign}${pips}${trade.unit} / ${sign}${net.toLocaleString("ja-JP")}円`,
     net >= 0 ? "win" : "loss",
   );
   if (pauseUntil)
-    await addLog(`${cfg.lossStreakMax}連敗のため${jstHM(pauseUntil)}まで停止します`, "error");
-  return { trade, daily: nd, stats: ns, streak: { losses }, pauseUntil };
+    await addLog(
+      `${cfg.lossStreakMax}連敗のため${jstHM(pauseUntil)}まで全銘柄を停止します`,
+      "error",
+    );
+  return trade;
 }
 
-// ---- 画面を閉じていた間も含め、確定1分足で決済・建値移動を判定
+// ---- 確定1分足で決済・建値移動を判定（画面を閉じていた間も含む）
 function scanCandles(pos, candles) {
   const spread = pos.spreadPrice || 0;
   let moved = false;
@@ -139,74 +172,91 @@ function liveCheck(pos, t, now) {
   const buy = pos.side === "BUY";
   const price = buy ? t.bid : t.ask;
   const slReason = pos.beMoved ? "建値決済" : "損切り";
-  if (buy ? price <= pos.sl : price >= pos.sl) return { hit: { exit: price, reason: slReason } };
-  if (buy ? price >= pos.tp : price <= pos.tp) return { hit: { exit: price, reason: "利確" } };
+  if (buy ? price <= pos.sl : price >= pos.sl) return { exit: price, reason: slReason };
+  if (buy ? price >= pos.tp : price <= pos.tp) return { exit: price, reason: "利確" };
   if (now - pos.openedAt >= (pos.timeStopMin || 15) * MIN)
-    return { hit: { exit: price, reason: "時間切れ" } };
-  return { hit: null, moved: maybeBreakEven(pos, price) };
+    return { exit: price, reason: "時間切れ" };
+  maybeBreakEven(pos, price);
+  return null;
 }
 
-function activeEvent(regime, brief, now, bufMin) {
+// その銘柄に関係する通貨の指標だけで止める（仮想通貨は米国指標も対象）
+function activeEvent(r, regime, brief, now, bufMin, symbol) {
   const buf = bufMin * MIN;
-  const events = [...(regime?.events || []), ...(brief?.events || [])];
-  return events.find((e) => e.ts && e.impact !== "low" && Math.abs(now - e.ts) <= buf) || null;
+  const curs = new Set(symbol.split("_"));
+  if (isCrypto(symbol)) curs.add("USD");
+  const events = [...(r?.events || []), ...(regime?.events || []), ...(brief?.events || [])];
+  return (
+    events.find(
+      (e) =>
+        e.ts &&
+        e.impact !== "low" &&
+        (!e.currency || curs.has(e.currency)) &&
+        Math.abs(now - e.ts) <= buf,
+    ) || null
+  );
 }
 
-// ---- エントリー判定（Claudeの方針の範囲内で、ルールだけで入る）
+// 同じ通貨の偏りチェック
+function exposureBlock(openPositions, symbol, side, max) {
+  const exp = {};
+  for (const p of openPositions)
+    for (const [cur, d] of legsOf(p.symbol, p.side)) exp[cur] = (exp[cur] || 0) + d;
+  for (const [cur, d] of legsOf(symbol, side)) {
+    const next = (exp[cur] || 0) + d;
+    if (Math.abs(next) > max)
+      return `${cur}${d > 0 ? "買い" : "売り"}のポジションが重なりすぎ（上限${max}）`;
+  }
+  return null;
+}
+
+// ---- 1銘柄のエントリー判定（AIの方針の範囲内で、ルールだけで入る）
 function evaluateEntry(x) {
   const {
     cfg,
-    regime,
-    brief,
-    levels,
+    r,
     fresh,
+    brief,
+    regime,
+    levels,
     t,
     market,
-    daily,
-    cooldownActive,
-    pauseUntil,
+    acct,
+    cooldown,
     lastSignal,
-    candles,
-    ind,
-    htf,
+    sig,
     now,
-    equity,
-    conv,
     pip,
+    conv,
   } = x;
   const unit = unitLabel(cfg.symbol);
   const digits = priceDigits(cfg.symbol);
+  const { candles, ind, htf, tf } = sig;
   if (t.status !== "OPEN") return no("市場クローズ中");
-  if (cfg.symbolMode === "auto" && cfg.autoBlocked)
-    return no("検証に合格した銘柄・設定がないため待機中（AIおまかせ）");
   const ses = sessionAllowed(now, cfg);
   if (!ses.ok)
-    return no(
-      ses.key === "other"
-        ? "取引時間外（早朝・時間帯の切り替わり）"
-        : `${SESSION_LABEL[ses.key]}時間は取引しない設定`,
-    );
-  if (pauseUntil && now < pauseUntil) return no(`連敗ストップ中（${jstHM(pauseUntil)}まで）`);
-  if (!regime) return no("Claudeの相場判定待ち");
-  if (fresh.expired) return no("相場判定が古いため待機");
-  if (regime.mode === "NO_TRADE" || regime.allow === "NONE") {
-    const who = regime.critic?.verdict === "VETO" ? "反論役が却下" : "Claude判定：見送り";
-    return no(`${who}${regime.summary ? `（${regime.summary}）` : ""}`);
+    return no(ses.key === "other" ? "取引時間外" : `${SESSION_LABEL[ses.key]}時間は取引しない設定`);
+  if (acct.pauseUntil && now < acct.pauseUntil)
+    return no(`連敗ストップ中（${jstHM(acct.pauseUntil)}まで）`);
+  if (!r) return no("AIの判定待ち");
+  if (fresh.expired) return no("AIの判定が古いため待機");
+  if (r.mode === "NO_TRADE" || r.allow === "NONE") {
+    const who = r.critic?.verdict === "VETO" ? "反論役が却下" : "AI判定：見送り";
+    return no(`${who}${r.summary ? `（${r.summary}）` : ""}`);
   }
-  if (regime.pauseUntilTs && now < regime.pauseUntilTs)
-    return no(`${jstHM(regime.pauseUntilTs)}まで停止（Claude指示）`);
-  const ev = activeEvent(regime, brief, now, cfg.eventBufferMin);
+  if (r.pauseUntilTs && now < r.pauseUntilTs)
+    return no(`${jstHM(r.pauseUntilTs)}まで停止（AI指示）`);
+  const ev = activeEvent(r, regime, brief, now, cfg.eventBufferMin, cfg.symbol);
   if (ev) return no(`指標前後のため停止：${ev.time_jst} ${ev.name}`);
-  if (cfg.dailyLossLimit > 0 && daily.pnl <= -cfg.dailyLossLimit) return no("日次損失上限に到達");
-  if (daily.trades >= cfg.maxTradesPerDay) return no("本日の取引回数上限");
-  if (cooldownActive) return no("決済後のクールダウン中");
-  const rs =
-    Number(regime.max_spread_pips) > 0 ? Number(regime.max_spread_pips) : Number.POSITIVE_INFINITY;
+  if (cfg.dailyLossLimit > 0 && acct.daily.pnl <= -cfg.dailyLossLimit)
+    return no("日次損失上限に到達");
+  if (acct.daily.trades >= cfg.maxTradesPerDay) return no("本日の取引回数上限");
+  if (cooldown) return no("決済後のクールダウン中");
+  const rs = Number(r.max_spread_pips) > 0 ? Number(r.max_spread_pips) : Number.POSITIVE_INFINITY;
   if (market.spreadPips > Math.min(cfg.maxSpreadPips, rs))
     return no(`スプレッド拡大（${market.spreadPips}${unit}）`);
   if (cfg.rr < cfg.minRr) return no(`リスクリワード${cfg.rr}が下限${cfg.minRr}未満`);
 
-  const tf = cfg.signalTf === 5 ? 5 : 1;
   const L = candles.length - 1;
   if (L < 60) return no(`${tf}分足データ不足`);
   const aPips = ind.atr14[L] / pip;
@@ -216,9 +266,9 @@ function evaluateEntry(x) {
   if (lastSignal && Number(lastSignal) === c.t) return no("同じ足では再エントリーしない");
 
   const htfDir = htfDirAt(htf, c.t + tf * MIN);
-  const sig = signalAt({
-    mode: regime.mode,
-    allow: regime.allow,
+  const s = signalAt({
+    mode: r.mode,
+    allow: r.allow,
     candles,
     ind,
     L,
@@ -226,7 +276,7 @@ function evaluateEntry(x) {
     cfg,
     htfDir,
   });
-  if (!sig)
+  if (!s)
     return no(
       cfg.htfFilter && htfDir === 0
         ? `シグナル待ち（${tf === 5 ? 15 : 5}分足の方向感なし）`
@@ -234,26 +284,35 @@ function evaluateEntry(x) {
       true,
     );
 
-  const entry = round(sig.side === "BUY" ? t.ask : t.bid, digits);
-  const lv = slTp({ entry, side: sig.side, atr: ind.atr14[L], cfg, pip, digits });
+  const entry = round(s.side === "BUY" ? t.ask : t.bid, digits);
+  const lv = slTp({ entry, side: s.side, atr: ind.atr14[L], cfg, pip, digits });
   if (cfg.levelFilter) {
-    const hit = levelInPath(levels?.all, sig.side, entry, lv.tp);
+    const hit = levelInPath(levels?.all, s.side, entry, lv.tp);
     if (hit)
       return no(`利確までの間に${hit.frame}の水平線（${hit.price}・反発${hit.touches}回）`, true);
   }
   const size = sizeUnits({
     cfg,
-    equity,
+    equity: cfg.paperBalance + acct.stats.net,
     slDist: lv.slDist,
     conv,
     symbol: cfg.symbol,
     price: entry,
   });
   if (!size.units) return no(size.why);
-  return { ok: true, ...sig, ...lv, entry, units: size.units, lastT: c.t, session: ses.key };
+  return {
+    ok: true,
+    ...s,
+    ...lv,
+    entry,
+    units: size.units,
+    lastT: c.t,
+    session: ses.key,
+    confidence: r.confidence || 0,
+  };
 }
 
-async function openPosition({ ev, cfg, t, regime, now, pip }) {
+async function openPosition({ ev, cfg, t, r, now, pip }) {
   const digits = priceDigits(cfg.symbol);
   const pos = {
     id: `${now.toString(36)}${Math.random().toString(36).slice(2, 6)}`,
@@ -269,8 +328,8 @@ async function openPosition({ ev, cfg, t, regime, now, pip }) {
     spreadPrice: t.ask - t.bid,
     setup: ev.setup,
     session: ev.session,
-    regimeMode: regime?.mode || null,
-    regimeConfidence: regime?.confidence ?? null,
+    regimeMode: r?.mode || null,
+    regimeConfidence: r?.confidence ?? null,
     timeStopMin: cfg.timeStopMin,
     beOn: cfg.beOn,
     beTrigger: cfg.beOn ? ev.slDist * cfg.beTriggerR : null,
@@ -278,9 +337,15 @@ async function openPosition({ ev, cfg, t, regime, now, pip }) {
     pip,
     digits,
   };
-  await redis.pipeline().set(K.position, pos).set(K.lastSignal, ev.lastT, { ex: 3600 }).exec();
+  await redis
+    .pipeline()
+    .set(K.posOf(cfg.symbol), pos)
+    .sadd(K.openSet, cfg.symbol)
+    .set(K.lastSignalOf(cfg.symbol), ev.lastT, { ex: 3600 })
+    .exec();
+  const q = isCrypto(cfg.symbol) ? cfg.symbol.split("_")[0] : "通貨";
   await addLog(
-    `${SIDE_JP[ev.side]}エントリー（${ev.setup}）${ev.units.toLocaleString("ja-JP")}${isCrypto(cfg.symbol) ? cfg.symbol.split("_")[0] : "通貨"} @${ev.entry.toFixed(digits)} 損切${ev.sl.toFixed(digits)} 利確${ev.tp.toFixed(digits)}`,
+    `${label(cfg.symbol)} ${SIDE_JP[ev.side]}エントリー（${ev.setup}）${ev.units.toLocaleString("ja-JP")}${q} @${ev.entry.toFixed(digits)} 損切${ev.sl.toFixed(digits)} 利確${ev.tp.toFixed(digits)}`,
     "entry",
   );
   return pos;
@@ -290,12 +355,14 @@ function withUnrealized(pos, t, cfg, conv) {
   if (!pos || !t) return pos;
   const price = pos.side === "BUY" ? t.bid : t.ask;
   const dir = pos.side === "BUY" ? 1 : -1;
-  const fee = feeOf(pos.symbol, pos.units, cfg);
   return {
     ...pos,
     price,
     pips: round((dir * (price - pos.entry)) / (pos.pip || pipSize(pos.symbol, pos.entry)), 1),
-    yen: round(pnlYen(pos.side, pos.entry, price, pos.units, conv) - fee, 0),
+    yen: round(
+      pnlYen(pos.side, pos.entry, price, pos.units, conv) - feeOf(pos.symbol, pos.units, cfg),
+      0,
+    ),
   };
 }
 
@@ -308,222 +375,337 @@ function nearestLevels(levels, price) {
   return { above, below };
 }
 
-export async function runTick({ full = false } = {}) {
-  const now = Date.now();
-  const [storedCfg, regime, position, storedStats, cooldown, lastSignal, streakRaw, pauseUntil] =
-    await redis.mget(
-      K.config,
-      K.regime,
-      K.position,
-      K.stats,
-      K.cooldown,
-      K.lastSignal,
-      K.streak,
-      K.pauseUntil,
-    );
-  const cfg = mergeConfig(storedCfg);
-  const bd = businessDate(now);
-  const [tickers, raw, extra] = await Promise.all([
-    getTickers(cfg.symbol),
-    getCachedKlines(cfg.symbol, "1min", now),
-    redis.mget(K.daily(bd), K.levels(cfg.symbol), K.brief(cfg.symbol, bd)),
-  ]);
-  const [dailyRaw, levels, brief] = extra;
-  const t = tickers[cfg.symbol];
-  if (!t) throw new Error(`${cfg.symbol}のレートを取得できません`);
-  const conv = quoteToJpy(cfg.symbol, tickers) ?? 1;
-  const pip = pipSize(cfg.symbol, (t.bid + t.ask) / 2);
-  const market = {
-    bid: t.bid,
-    ask: t.ask,
-    spreadPips: round((t.ask - t.bid) / pip, 1),
-    status: t.status,
-    ts: t.ts,
-  };
-  const candles = closedOnly(raw, "1min", now);
-  const ind = computeScalpIndicators(candles);
-  const tf = cfg.signalTf === 5 ? 5 : 1;
-  const sigCandles = signalCandles(candles, tf, now);
-  const sigInd = tf === 5 ? computeScalpIndicators(sigCandles) : ind;
-  const htf = buildHtf(candles, tf === 5 ? 15 : 5);
-  const fresh = regimeFreshness(regime, cfg, now);
-  let daily = { ...EMPTY_DAILY, ...(dailyRaw || {}) };
-  let stats = { ...EMPTY_STATS, ...(storedStats || {}) };
-  let streak = streakRaw || { losses: 0 };
-  let pausedUntil = Number(pauseUntil) || null;
-  let pos = position;
-  let closed = null;
-  let decision = { state: "idle", text: "停止中（新規エントリーはしません）" };
+// 旧形式（1ポジションだけ）のデータを移行
+async function migrateLegacy() {
+  const legacy = await redis.get(K.position);
+  if (!legacy?.symbol) return;
+  await redis
+    .pipeline()
+    .set(K.posOf(legacy.symbol), legacy)
+    .sadd(K.openSet, legacy.symbol)
+    .del(K.position)
+    .exec();
+}
 
-  const locked = await acquireLock(K.tickLock, 8);
+export async function runTick({ full = false, focus = null } = {}) {
+  const now = Date.now();
+  await migrateLegacy();
+  const [storedCfg, regime, storedStats, streakRaw, pauseUntil, openList] = await Promise.all([
+    redis.get(K.config),
+    redis.get(K.regime),
+    redis.get(K.stats),
+    redis.get(K.streak),
+    redis.get(K.pauseUntil),
+    redis.smembers(K.openSet),
+  ]);
+  const cfg = mergeConfig(storedCfg);
+  const items = portfolioOf(cfg).slice(0, 11);
+  const itemMap = Object.fromEntries(items.map((it) => [it.symbol, it]));
+  const symbols = [
+    ...new Set([
+      ...items.map((i) => i.symbol),
+      ...(openList || []).filter((s) => SYMBOLS.includes(s)),
+    ]),
+  ];
+  const bd = businessDate(now);
+  const perKeys = symbols.flatMap((s) => [
+    K.posOf(s),
+    K.cooldownOf(s),
+    K.lastSignalOf(s),
+    K.levels(s),
+  ]);
+  const [tickers, klines, perVals, extra] = await Promise.all([
+    symbols.length ? fetchTickers(symbols) : Promise.resolve({}),
+    Promise.all(symbols.map((s) => getCachedKlines(s, "1min", now).catch(() => []))),
+    perKeys.length ? redis.mget(...perKeys) : Promise.resolve([]),
+    redis.mget(K.daily(bd), K.brief("ALL", bd)),
+  ]);
+  const [dailyRaw, brief] = extra;
+  const acct = {
+    daily: { ...EMPTY_DAILY, ...(dailyRaw || {}) },
+    stats: { ...EMPTY_STATS, ...(storedStats || {}) },
+    streak: streakRaw || { losses: 0 },
+    pauseUntil: Number(pauseUntil) || null,
+  };
+  const fresh = regimeFreshness(regime, cfg, now);
+
+  // 銘柄ごとの下ごしらえ
+  const st = symbols.map((symbol, i) => {
+    const ecfg = itemMap[symbol] ? cfgFor(cfg, itemMap[symbol]) : { ...cfg, symbol };
+    const t = tickers[symbol] || null;
+    const pip = pipSize(symbol, t ? (t.bid + t.ask) / 2 : 0);
+    const candles = closedOnly(klines[i] || [], "1min", now);
+    const tf = ecfg.signalTf === 5 ? 5 : 1;
+    const ind1 = computeScalpIndicators(candles);
+    const sc = signalCandles(candles, tf, now);
+    const sig = {
+      candles: sc,
+      ind: tf === 5 ? computeScalpIndicators(sc) : ind1,
+      htf: buildHtf(candles, tf === 5 ? 15 : 5),
+      tf,
+    };
+    return {
+      symbol,
+      inPortfolio: Boolean(itemMap[symbol]),
+      cfg: ecfg,
+      t,
+      pip,
+      conv: quoteToJpy(symbol, tickers) ?? 1,
+      candles,
+      ind1,
+      sig,
+      pos: perVals[i * 4],
+      cooldown: perVals[i * 4 + 1],
+      lastSignal: perVals[i * 4 + 2],
+      levels: perVals[i * 4 + 3],
+      r: regimeOf(regime, symbol),
+      closed: null,
+      decision: null,
+    };
+  });
+
+  const locked = await acquireLock(K.tickLock, 12);
+  const closedTrades = [];
   if (locked) {
     try {
-      if (pos) {
-        const before = JSON.stringify(pos);
-        pos = { ...pos };
-        const scan = scanCandles(pos, candles);
+      // 1) 保有中の決済判定
+      for (const x of st) {
+        if (!x.pos || !x.t) continue;
+        const before = JSON.stringify(x.pos);
+        const pos = { ...x.pos };
+        const scan = scanCandles(pos, x.candles);
         let hit = scan.hit;
         let at = hit?.at ?? now;
-        if (!hit && t.status === "OPEN") {
-          hit = liveCheck(pos, t, now).hit;
+        if (!hit && x.t.status === "OPEN") {
+          hit = liveCheck(pos, x.t, now);
           at = now;
         }
         if (hit) {
-          const r = await closeTrade({
+          x.closed = await closeTrade({
             pos,
             exit: hit.exit,
             reason: hit.reason,
             closedAt: Math.max(at, pos.openedAt),
-            cfg,
-            conv,
-            daily,
-            stats,
-            streak,
+            cfg: x.cfg,
+            conv: x.conv,
+            acct,
           });
-          closed = r.trade;
-          daily = r.daily;
-          stats = r.stats;
-          streak = r.streak;
-          if (r.pauseUntil) pausedUntil = r.pauseUntil;
-          pos = null;
-        } else if (JSON.stringify(pos) !== before) {
+          closedTrades.push(x.closed);
+          x.pos = null;
+        } else {
           if (pos.beMoved && !JSON.parse(before).beMoved)
-            await addLog("含み益が伸びたため損切りを建値へ移動", "entry");
-          await redis.set(K.position, pos);
+            await addLog(`${label(x.symbol)} 損切りを建値へ移動`, "entry");
+          if (JSON.stringify(pos) !== before) await redis.set(K.posOf(x.symbol), pos);
+          x.pos = pos;
         }
       }
 
-      if (pos) {
-        decision = {
-          state: "holding",
-          text: `${SIDE_JP[pos.side]}ポジション保有中（${pos.setup}${pos.beMoved ? "・建値ストップ済み" : ""}）`,
-        };
-      } else if (cfg.running) {
-        const ev = evaluateEntry({
-          cfg,
-          regime,
-          brief,
-          levels,
-          fresh,
-          t,
-          market,
-          daily,
-          cooldownActive: Boolean(cooldown) || Boolean(closed),
-          pauseUntil: pausedUntil,
-          lastSignal,
-          candles: sigCandles,
-          ind: sigInd,
-          htf,
-          now,
-          equity: cfg.paperBalance + stats.net,
-          pip,
-          conv,
-        });
-        if (ev.ok) {
-          pos = await openPosition({ ev, cfg, t, regime, now, pip });
-          decision = { state: "entered", text: `${SIDE_JP[ev.side]}エントリー（${ev.setup}）` };
-        } else {
-          decision = { state: ev.waiting ? "watching" : "blocked", text: ev.why };
+      // 2) 新規エントリー（確信度の高い順に、上限と通貨の偏りを守って入る）
+      const open = () => st.filter((x) => x.pos).map((x) => x.pos);
+      const candidates = [];
+      for (const x of st) {
+        if (x.pos) {
+          x.decision = {
+            state: "holding",
+            text: `${SIDE_JP[x.pos.side]}保有中（${x.pos.setup}${x.pos.beMoved ? "・建値ストップ済み" : ""}）`,
+          };
+          continue;
         }
+        if (!cfg.running) {
+          x.decision = { state: "idle", text: "停止中" };
+          continue;
+        }
+        if (!x.inPortfolio) {
+          x.decision = { state: "idle", text: "採用外（決済済み）" };
+          continue;
+        }
+        if (!x.t) {
+          x.decision = { state: "blocked", text: "レートを取得できません" };
+          continue;
+        }
+        const market = { spreadPips: round((x.t.ask - x.t.bid) / x.pip, 1) };
+        const ev = evaluateEntry({
+          cfg: x.cfg,
+          r: x.r,
+          fresh,
+          brief,
+          regime,
+          levels: x.levels,
+          t: x.t,
+          market,
+          acct,
+          cooldown: Boolean(x.cooldown) || Boolean(x.closed),
+          lastSignal: x.lastSignal,
+          sig: x.sig,
+          now,
+          pip: x.pip,
+          conv: x.conv,
+        });
+        if (ev.ok) candidates.push({ x, ev });
+        else x.decision = { state: ev.waiting ? "watching" : "blocked", text: ev.why };
+      }
+      candidates.sort((a, b) => b.ev.confidence - a.ev.confidence);
+      for (const { x, ev } of candidates) {
+        const cur = open();
+        if (cur.length >= cfg.maxPositions) {
+          x.decision = { state: "blocked", text: `同時ポジション上限（${cfg.maxPositions}）` };
+          continue;
+        }
+        const ex = exposureBlock(cur, x.symbol, ev.side, cfg.maxSameCurrency);
+        if (ex) {
+          x.decision = { state: "blocked", text: ex };
+          continue;
+        }
+        x.pos = await openPosition({ ev, cfg: x.cfg, t: x.t, r: x.r, now, pip: x.pip });
+        x.decision = { state: "entered", text: `${SIDE_JP[ev.side]}エントリー（${ev.setup}）` };
       }
     } finally {
       await redis.del(K.tickLock);
     }
   } else {
-    decision = { state: "busy", text: "別の処理が実行中" };
+    for (const x of st) x.decision = { state: "busy", text: "別の処理が実行中" };
   }
 
-  const SL = sigCandles.length - 1;
-  const from = Math.max(0, candles.length - 90);
-  const ses = sessionAllowed(now, cfg);
-  const snap = {
-    now,
-    symbol: cfg.symbol,
-    digits: priceDigits(cfg.symbol),
-    config: cfg,
-    market,
-    regime,
-    regimeStale: fresh.stale,
-    briefStale: briefStale(brief, now),
-    levelsStale: !levels || now - levels.at >= LEVELS_TTL_MS,
-    optimizeStale:
-      cfg.symbolMode === "auto" && (!cfg.autoPickAt || now - cfg.autoPickAt >= 24 * 3600 * 1000),
-    position: withUnrealized(pos, t, cfg, conv),
-    closed,
-    daily,
-    stats,
-    equity: round(cfg.paperBalance + stats.net, 0),
-    streak,
-    pauseUntil: pausedUntil && pausedUntil > now ? pausedUntil : null,
-    session: {
-      key: ses.key,
-      label: ses.key === "other" && !ses.ok ? "時間外" : SESSION_LABEL[ses.key],
-      ok: ses.ok,
-    },
-    unit: unitLabel(cfg.symbol),
-    nearest: nearestLevels(levels, (t.bid + t.ask) / 2),
-    decision,
-    watch:
-      SL >= 0
+  // ---- 画面用のまとめ
+  const rows = st.map((x) => {
+    const L = x.sig.candles.length - 1;
+    return {
+      symbol: x.symbol,
+      inPortfolio: x.inPortfolio,
+      unit: unitLabel(x.symbol),
+      digits: priceDigits(x.symbol),
+      bid: x.t?.bid ?? null,
+      ask: x.t?.ask ?? null,
+      spreadPips: x.t ? round((x.t.ask - x.t.bid) / x.pip, 1) : null,
+      status: x.t?.status || "CLOSE",
+      decision: x.decision,
+      position: withUnrealized(x.pos, x.t, x.cfg, x.conv),
+      regime: x.r
         ? {
-            tf,
-            rsi7: sigInd.rsi7[SL] === null ? null : round(sigInd.rsi7[SL], 1),
-            atrPips: sigInd.atr14[SL] === null ? null : round(sigInd.atr14[SL] / pip, 2),
-            htfDir: htfDirAt(htf, sigCandles[SL].t + tf * MIN),
+            mode: x.r.mode,
+            allow: x.r.allow,
+            confidence: x.r.confidence,
+            summary: x.r.summary,
+            critic: x.r.critic?.verdict || null,
           }
         : null,
-    chart: {
-      candles: candles.slice(from),
-      ema9: ind.ema9.slice(from),
-      ema21: ind.ema21.slice(from),
+      session: (() => {
+        const s = sessionAllowed(now, x.cfg);
+        return {
+          key: s.key,
+          label: s.key === "other" && !s.ok ? "時間外" : SESSION_LABEL[s.key],
+          ok: s.ok,
+        };
+      })(),
+      label: itemMap[x.symbol]?.label || null,
+      watch:
+        L >= 0
+          ? {
+              tf: x.sig.tf,
+              rsi7: x.sig.ind.rsi7[L] === null ? null : round(x.sig.ind.rsi7[L], 1),
+              atrPips: x.sig.ind.atr14[L] === null ? null : round(x.sig.ind.atr14[L] / x.pip, 2),
+              htfDir: htfDirAt(x.sig.htf, x.sig.candles[L].t + x.sig.tf * MIN),
+            }
+          : null,
+    };
+  });
+  const focusSym =
+    (focus && rows.find((r) => r.symbol === focus)?.symbol) ||
+    rows.find((r) => r.position)?.symbol ||
+    rows[0]?.symbol ||
+    null;
+  const fx = st.find((x) => x.symbol === focusSym);
+  const from = fx ? Math.max(0, fx.candles.length - 90) : 0;
+  const positions = rows.filter((r) => r.position);
+  const snap = {
+    now,
+    config: cfg,
+    regime,
+    regimeStale: fresh.stale,
+    briefStale: briefStale(
+      brief,
+      now,
+      items.map((i) => i.symbol),
+    ),
+    levelsStale: st.some((x) => x.inPortfolio && (!x.levels || now - x.levels.at >= LEVELS_TTL_MS)),
+    optimizeStale:
+      cfg.symbolMode === "auto" && (!cfg.autoPickAt || now - cfg.autoPickAt >= 24 * 3600 * 1000),
+    rows,
+    focus: focusSym,
+    totals: {
+      open: positions.length,
+      maxPositions: cfg.maxPositions,
+      unrealized: positions.reduce((s, r) => s + (r.position.yen || 0), 0),
     },
+    closed: closedTrades,
+    daily: acct.daily,
+    stats: acct.stats,
+    equity: round(cfg.paperBalance + acct.stats.net, 0),
+    streak: acct.streak,
+    pauseUntil: acct.pauseUntil && acct.pauseUntil > now ? acct.pauseUntil : null,
+    detail: fx
+      ? {
+          symbol: fx.symbol,
+          digits: priceDigits(fx.symbol),
+          unit: unitLabel(fx.symbol),
+          nearest: fx.t ? nearestLevels(fx.levels, (fx.t.bid + fx.t.ask) / 2) : null,
+          chart: {
+            candles: fx.candles.slice(from),
+            ema9: fx.ind1.ema9.slice(from),
+            ema21: fx.ind1.ema21.slice(from),
+          },
+        }
+      : null,
   };
-  if (full || closed) {
+  if (full || closedTrades.length) {
     const [trades, logs] = await Promise.all([getTrades(30), getLogs(40)]);
     snap.trades = trades;
     snap.logs = logs;
-    snap.levels = levels;
     snap.brief = brief;
+    snap.levels = fx?.levels || null;
   }
   return snap;
 }
 
-export async function manualClose() {
+export async function manualClose(symbol) {
   const now = Date.now();
-  const ok = await acquireLock(K.tickLock, 8, 10, 300);
+  const ok = await acquireLock(K.tickLock, 12, 10, 300);
   if (!ok) throw new Error("処理中です。少し待ってからもう一度押してください");
   try {
-    const [storedCfg, pos, storedStats, streak] = await redis.mget(
+    const [storedCfg, pos, storedStats, streak, dailyRaw] = await redis.mget(
       K.config,
-      K.position,
+      K.posOf(symbol),
       K.stats,
       K.streak,
+      K.daily(businessDate(now)),
     );
     if (!pos) return { closed: null };
     const cfg = mergeConfig(storedCfg);
-    const tickers = await getTickers(pos.symbol);
-    const t = tickers[pos.symbol];
+    const tickers = await fetchTickers([symbol, "USD_JPY"]);
+    const t = tickers[symbol];
     if (!t || t.status !== "OPEN") throw new Error("市場クローズ中のため決済できません");
-    const dailyRaw = await redis.get(K.daily(businessDate(now)));
-    const r = await closeTrade({
+    const acct = {
+      daily: { ...EMPTY_DAILY, ...(dailyRaw || {}) },
+      stats: { ...EMPTY_STATS, ...(storedStats || {}) },
+      streak: streak || { losses: 0 },
+    };
+    const closed = await closeTrade({
       pos,
       exit: pos.side === "BUY" ? t.bid : t.ask,
       reason: "手動決済",
       closedAt: now,
       cfg,
-      conv: quoteToJpy(pos.symbol, tickers) ?? 1,
-      daily: { ...EMPTY_DAILY, ...(dailyRaw || {}) },
-      stats: { ...EMPTY_STATS, ...(storedStats || {}) },
-      streak,
+      conv: quoteToJpy(symbol, tickers) ?? 1,
+      acct,
     });
-    return { closed: r.trade };
+    return { closed };
   } finally {
     await redis.del(K.tickLock);
   }
 }
 
 export async function resetPaper() {
-  const ok = await acquireLock(K.tickLock, 8, 10, 300);
+  const ok = await acquireLock(K.tickLock, 12, 10, 300);
   if (!ok) throw new Error("処理中です。少し待ってからもう一度押してください");
   try {
     const ids = await redis.lrange(K.tradeIds, 0, -1);
@@ -538,6 +720,8 @@ export async function resetPaper() {
       K.dailyKeys,
       K.streak,
       K.pauseUntil,
+      K.openSet,
+      ...SYMBOLS.flatMap((s) => [K.posOf(s), K.cooldownOf(s), K.lastSignalOf(s)]),
       ...ids.map((id) => K.trade(id)),
       ...dailyKeys,
     ];
@@ -559,9 +743,13 @@ export async function riskLockState() {
   );
   const pnl = dailyRaw?.pnl || 0;
   const losses = streak?.losses || 0;
-  const paused = Number(pauseUntil) > now;
   if (pnl < 0) return { locked: true, why: "本日マイナスのため" };
   if (losses >= 2) return { locked: true, why: `${losses}連敗中のため` };
-  if (paused) return { locked: true, why: "連敗ストップ中のため" };
+  if (Number(pauseUntil) > now) return { locked: true, why: "連敗ストップ中のため" };
   return { locked: false };
+}
+
+// 保有中の銘柄一覧（設定の銘柄変更チェック用）
+export async function openSymbols() {
+  return (await redis.smembers(K.openSet)) || [];
 }

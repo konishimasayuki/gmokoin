@@ -29,7 +29,9 @@ const NUM_GROUPS = [
   {
     title: "負けを小さくする",
     fields: [
-      ["dailyLossLimit", "1日の損失上限（円）", 500],
+      ["dailyLossLimit", "1日の損失上限（円・全銘柄合計）", 500],
+      ["maxPositions", "同時に持つポジション数の上限", 1],
+      ["maxSameCurrency", "同じ通貨を同じ向きに持つ数の上限", 1],
       ["maxTradesPerDay", "1日の最大取引回数", 1],
       ["lossStreakMax", "何連敗で休むか", 1],
       ["lossStreakPauseMin", "連敗後に休む時間（分）", 10],
@@ -61,6 +63,7 @@ const NUM_GROUPS = [
     title: "AIと動作",
     fields: [
       ["regimeIntervalMin", "AIが方針を見直す間隔（分）", 5],
+      ["maxSymbols", "AIおまかせで採用する銘柄数の上限", 1],
       ["tickSec", "価格チェックの間隔（秒）", 1],
       ["feePerUnit", "API手数料（円/通貨・片道）", 0.001],
     ],
@@ -134,13 +137,22 @@ export default function SettingsPage({ hasPosition, onSaved, onLogout }) {
         </div>
         {auto ? (
           <div className="auto-box">
-            <p>
-              いまの銘柄：<b>{symbolLabel(form.symbol)}</b>
-              {form.signalTf ? `・${form.signalTf}分足` : ""}
-            </p>
+            {form.portfolio?.length ? (
+              <ul className="port-list">
+                {form.portfolio.map((p) => (
+                  <li key={p.symbol}>
+                    <b>{symbolLabel(p.symbol)}</b>
+                    <small>{p.label}</small>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p>採用中の銘柄はまだありません。</p>
+            )}
             <p className="hint">
               1日1回、全{data.symbols.length}
-              銘柄×約580通りの設定を過去90日で試し、5段階の検証（未来を見ないテスト・ランダムな週・1000回の引き直し・悪条件・設定のブレ）をすべて通ったものだけを採用します。合格がなければ新規エントリーを止めます。
+              銘柄×約580通りの設定を過去90日で試し、5段階の検証（未来を見ないテスト・ランダムな週・1000回の引き直し・悪条件・設定のブレ）をすべて通った銘柄を、最大
+              {form.maxSymbols}銘柄まで同時に動かします。合格がなければ新規エントリーを止めます。
             </p>
             {form.autoBlocked && (
               <p className="notice soft">

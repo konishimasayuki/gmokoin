@@ -5,7 +5,8 @@ export default async function handler(req, res) {
   if (!requireAuth(req, res)) return;
   if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
   try {
-    const snap = await runTick({ full: req.query?.full === "1" });
+    const focus = typeof req.query?.focus === "string" ? req.query.focus : null;
+    const snap = await runTick({ full: req.query?.full === "1", focus });
     res.setHeader("Cache-Control", "no-store");
     return res.status(200).json(snap);
   } catch (e) {

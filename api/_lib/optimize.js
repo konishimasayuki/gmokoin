@@ -264,6 +264,8 @@ export async function optimizeSymbol(symbol, { now = Date.now() } = {}) {
         train,
         test,
         full,
+        // ポートフォリオ全体の成績を出すための損益の並び [決済時刻, 損益]
+        nets: fullTrades.slice(-1500).map((t) => [t.closedAt, t.net]),
         weeks,
         mc,
         stress,
@@ -301,43 +303,82 @@ export async function optimizeSymbol(symbol, { now = Date.now() } = {}) {
 }
 
 // 全銘柄の結果を集めて採用を決める
+// 合格した銘柄を組み合わせたときの成績（同時に持つ制限は考慮しない概算）
+function combine(list, rng) {
+  const nets = list.flatMap((r) => r.best.nets || []).sort((a, b) => a[0] - b[0]);
+  let eq = 0;
+  let peak = 0;
+  let maxDd = 0;
+  let gw = 0;
+  let gl = 0;
+  let wins = 0;
+  const curve = [];
+  for (const [t, n] of nets) {
+    eq += n;
+    if (n > 0) {
+      gw += n;
+      wins++;
+    } else gl -= n;
+    peak = Math.max(peak, eq);
+    maxDd = Math.max(maxDd, peak - eq);
+    curve.push({ t, v: round(eq, 0) });
+  }
+  const step = Math.max(1, Math.ceil(curve.length / 120));
+  const mc = monteCarlo(
+    nets.map(([, n]) => ({ net: n })),
+    rng,
+  );
+  return {
+    trades: nets.length,
+    net: round(eq, 0),
+    pf: gl > 0 ? round(gw / gl, 2) : gw > 0 ? 99 : 0,
+    winRate: nets.length ? round((wins / nets.length) * 100, 1) : 0,
+    maxDd: round(maxDd, 0),
+    mc,
+    curve: curve.filter((_, i) => i % step === 0 || i === curve.length - 1),
+  };
+}
+
+// 全銘柄の結果を集めて、合格した銘柄をまとめて採用する
 export async function finalizeOptimize({ apply = false, now = Date.now() } = {}) {
+  const cfg = mergeConfig(await redis.get(K.config));
   const rows = await redis.mget(...SYMBOLS.map((s) => K.optSymbol(s)));
   const results = SYMBOLS.map((s, i) => rows[i] || { symbol: s, error: "未検証" }).map((r) =>
     r.at && now - r.at > RESULT_TTL ? { ...r, stale: true } : r,
   );
   const passing = results.filter((r) => !r.stale && r.best?.pass);
   passing.sort((a, b) => b.best.robust - a.best.robust || b.best.test.net - a.best.test.net);
-  const pick = passing[0]
-    ? { symbol: passing[0].symbol, params: passing[0].best.params, label: passing[0].best.label }
-    : null;
+  const chosen = passing.slice(0, cfg.maxSymbols);
+  const portfolio = chosen.map((r) => ({
+    symbol: r.symbol,
+    params: r.best.params,
+    label: r.best.label,
+    robust: r.best.robust,
+    test: { pf: r.best.test.pf, net: r.best.test.net, trades: r.best.test.trades },
+  }));
+  const combined = chosen.length ? combine(chosen, rngOf(`${businessDate(now)}:portfolio`)) : null;
 
   let applied = null;
-  const cfg = mergeConfig(await redis.get(K.config));
   if (apply && cfg.symbolMode === "auto") {
-    const pos = await redis.get(K.position);
-    if (pos) applied = { status: "skipped", why: "ポジション保有中のため、決済後に切り替えます" };
-    else if (pick) {
-      const assetDefaults =
-        assetOf(pick.symbol) !== assetOf(cfg.symbol) ? ASSET_DEFAULTS[assetOf(pick.symbol)] : {};
+    if (portfolio.length) {
+      const first = portfolio[0].symbol;
       await redis.set(K.config, {
         ...cfg,
-        ...assetDefaults,
-        ...pick.params,
-        symbol: pick.symbol,
+        ...(assetOf(first) !== assetOf(cfg.symbol) ? ASSET_DEFAULTS[assetOf(first)] : {}),
+        symbol: first,
+        portfolio,
         autoBlocked: false,
         autoPickAt: now,
       });
-      if (pick.symbol !== cfg.symbol) await redis.del(K.regime, K.lastSignal);
       await addLog(
-        `AIおまかせ：${pick.symbol.replace("_", "/")}を選択（5段階の検証に合格・${pick.label}）`,
+        `AIおまかせ：${portfolio.map((p) => p.symbol.replace("_", "/")).join("、")}の${portfolio.length}銘柄を採用（5段階の検証に合格）`,
         "regime",
       );
-      applied = { status: "applied", symbol: pick.symbol };
+      applied = { status: "applied", symbols: portfolio.map((p) => p.symbol) };
     } else {
-      await redis.set(K.config, { ...cfg, autoBlocked: true, autoPickAt: now });
+      await redis.set(K.config, { ...cfg, portfolio: [], autoBlocked: true, autoPickAt: now });
       await addLog(
-        "AIおまかせ：5段階の検証に合格した銘柄・設定がないため、新規エントリーを止めます",
+        "AIおまかせ：5段階の検証に合格した銘柄がないため、新規エントリーを止めます",
         "error",
       );
       applied = { status: "blocked" };
@@ -348,10 +389,12 @@ export async function finalizeOptimize({ apply = false, now = Date.now() } = {})
     totalDays: TOTAL_DAYS,
     testDays: TEST_DAYS,
     rule: PASS_RULE,
-    results,
-    pick,
+    results: results.map((r) => (r.best ? { ...r, best: { ...r.best, nets: undefined } } : r)),
+    portfolio,
+    combined,
+    pick: portfolio[0] ? { symbol: portfolio[0].symbol } : null,
     applied,
-    note: "相場判定はClaudeではなく1時間足の機械判定で代用。ランダム検証の週と引き直しは日替わりで変わります。",
+    note: "相場判定はClaudeではなく1時間足の機械判定で代用。組み合わせの成績は、同時に持てる数の制限を考えない概算です。ランダム検証は日替わりです。",
   };
   await redis.set(K.optimizeLast, out, { ex: 60 * 60 * 24 * 30 });
   return out;

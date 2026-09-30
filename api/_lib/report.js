@@ -104,6 +104,7 @@ export async function runReport({ kind = "daily" } = {}) {
       net,
       manual,
       bySession: breakdown(trades, (t) => SESSION_LABEL[t.session || sessionOf(t.openedAt)]),
+      bySymbol: breakdown(trades, (t) => t.symbol?.replace("_", "/")),
       bySetup: breakdown(trades, (t) => t.setup),
       byReason: breakdown(trades, (t) => t.reason),
     };
@@ -125,7 +126,7 @@ export async function runReport({ kind = "daily" } = {}) {
         .slice(0, 150)
         .map(
           (t) =>
-            `${jstLabel(t.openedAt).slice(11, 22)} ${t.side} ${t.setup} ${SESSION_LABEL[t.session] || ""} 判定:${t.regimeMode || "-"}(${t.regimeConfidence ?? "-"}%) ${t.reason} ${t.pips}pips ${t.net}円`,
+            `${jstLabel(t.openedAt).slice(11, 22)} ${t.symbol} ${t.side} ${t.setup} ${SESSION_LABEL[t.session] || ""} 判定:${t.regimeMode || "-"}(${t.regimeConfidence ?? "-"}%) ${t.reason} ${t.pips}pips ${t.net}円`,
         )
         .join("\n");
       const editable = Object.keys(LABELS)
