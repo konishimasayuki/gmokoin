@@ -6,9 +6,10 @@ import { SESSION_LABEL, aggregate, sessionOf, sizeUnits } from "./strategy.js";
 import { feeOf, isCrypto, pnlYen, round } from "./util.js";
 
 const MIN = 60000;
+// base＝読み込む足（その足をそのまま執行足にする）
 export const WW_COMBOS = {
-  "1h5m": { upper: 60, mid: 15, exec: 5, label: "1時間足×5分足" },
-  "15m1m": { upper: 15, mid: 5, exec: 1, label: "15分足×1分足" },
+  "1h5m": { base: 5, iv: "5min", upper: 60, mid: 15, exec: 5, label: "1時間足×5分足" },
+  "4h15m": { base: 15, iv: "15min", upper: 240, mid: 60, exec: 15, label: "4時間足×15分足" },
 };
 
 // ---------- 時間帯（A-7） ----------
@@ -234,7 +235,7 @@ export function wwPrep(prep, combo, nExec, nUpper = 6) {
   if (prep.ww[key]) return prep.ww[key];
   const c = WW_COMBOS[combo];
   const base = prep.candles;
-  const exec = c.exec === 1 ? base : aggregate(base, c.exec);
+  const exec = c.exec === c.base ? base : aggregate(base, c.exec);
   const upper = aggregate(base, c.upper);
   const mid = aggregate(base, c.mid);
   const side = (m) => {
@@ -333,7 +334,7 @@ export function detect(v, i, gp, used) {
     if (!tl) continue;
     const trig = Math.min(m, tl.at(i + 1));
     if (bars[i].c <= trig) continue; // すでに割れている（出遅れ）
-    return { id, trig, D, left, dI, touches: tl.touches };
+    return { id, trig, D, left, dI, touches: tl.touches, A, B, C, m };
   }
   return null;
 }
@@ -378,6 +379,9 @@ export function simulateWW(prep, gp, env) {
       net,
       fee,
       touches: pos.touches,
+      sl: pos.sl,
+      tp: pos.tp,
+      ww: pos.ww,
     });
     equity += net;
     realized += net;
@@ -426,6 +430,18 @@ export function simulateWW(prep, gp, env) {
             i0: i,
             left: armed.left,
             touches: armed.touches,
+            ww: (() => {
+              const px = (p) => round(side === "SELL" ? p : -p, 5);
+              const at = (k) => bars[k]?.t;
+              return {
+                A: [at(armed.A.i), px(armed.A.p)],
+                B: [at(armed.B.i), px(armed.B.p)],
+                C: [at(armed.C.i), px(armed.C.p)],
+                D: [at(armed.dI), px(armed.D)],
+                miniNeck: px(armed.m),
+                touches: armed.touches,
+              };
+            })(),
           };
           used[side].add(armed.id);
           // 同じ足で損切りに届いていれば損切り（保守的）

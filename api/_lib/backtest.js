@@ -93,6 +93,74 @@ export async function loadCandles(symbol, days, now) {
   return [...map.values()].sort((a, b) => a.t - b.t).filter((c) => c.t + MIN <= now);
 }
 
+// 長期間の足（5分足・15分足など）。終わった月は月ごとにまとめて保存し、今月分は日ごとに保存する
+const pack = (arr) => arr.map((c) => [c.t, c.o, c.h, c.l, c.c]);
+const unpack = (arr) => arr.map((a) => ({ t: a[0], o: a[1], h: a[2], l: a[3], c: a[4] }));
+async function fetchDay(symbol, iv, bd) {
+  // 土日などデータのない日はエラーになることがあるので、再試行は1回だけ
+  for (let k = 0; k < 2; k++) {
+    try {
+      return await getKlines(symbol, iv, bd);
+    } catch {
+      if (k === 0) await new Promise((r) => setTimeout(r, 500));
+    }
+  }
+  return [];
+}
+export async function loadBars(symbol, iv, days, now) {
+  const today = businessDate(now);
+  const curYm = today.slice(0, 6);
+  const dates = [
+    ...new Set(
+      Array.from({ length: days + 5 }, (_, i) => businessDate(now - (days + 4 - i) * DAY)),
+    ),
+  ];
+  const months = [...new Set(dates.map((d) => d.slice(0, 6)))];
+  const out = [];
+  for (const ym of months) {
+    const inMonth = dates.filter((d) => d.slice(0, 6) === ym);
+    if (ym !== curYm) {
+      const key = K.barMonth(symbol, iv, ym);
+      const cached = await redis.get(key);
+      if (Array.isArray(cached)) {
+        out.push(...unpack(cached));
+        continue;
+      }
+      // その月の全営業日を取得して保存
+      const y = Number(ym.slice(0, 4));
+      const m = Number(ym.slice(4, 6));
+      const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
+      const all = Array.from({ length: last }, (_, k) => `${ym}${String(k + 1).padStart(2, "0")}`);
+      const bars = [];
+      for (let k = 0; k < all.length; k += 6) {
+        const got = await Promise.all(all.slice(k, k + 6).map((d) => fetchDay(symbol, iv, d)));
+        for (const g of got) bars.push(...g);
+      }
+      if (bars.length) await redis.set(key, pack(bars), { ex: 60 * 60 * 24 * 400 });
+      out.push(...bars);
+    } else {
+      for (let k = 0; k < inMonth.length; k += 6) {
+        const got = await Promise.all(
+          inMonth.slice(k, k + 6).map(async (d) => {
+            if (d === today) return fetchDay(symbol, iv, d);
+            const key = K.barDay(symbol, iv, d);
+            const c = await redis.get(key);
+            if (Array.isArray(c)) return unpack(c);
+            const bars = await fetchDay(symbol, iv, d);
+            if (bars.length) await redis.set(key, pack(bars), { ex: 60 * 60 * 24 * 40 });
+            return bars;
+          }),
+        );
+        for (const g of got) out.push(...g);
+      }
+    }
+  }
+  const map = new Map();
+  const ms = { "5min": 5, "15min": 15, "1hour": 60 }[iv] || 1;
+  for (const c of out) if (c.t + ms * MIN <= now && c.t >= now - (days + 1) * DAY) map.set(c.t, c);
+  return [...map.values()].sort((a, b) => a.t - b.t);
+}
+
 // 設定に依存しない下ごしらえ（指標・時間帯・機械判定を一度だけ計算）
 export function prepare(candles) {
   const n = candles.length;

@@ -122,7 +122,7 @@ export function describe(p) {
   return `${p.signalTf}分足・${ses}・利確${p.rr}倍・損切りATR${p.slAtrMult}倍・${p.beOn ? "建値あり" : "建値なし"}・${p.htfFilter ? "上位足フィルターあり" : "フィルターなし"}・最長${p.timeStopMin}分`;
 }
 
-function rngOf(seedStr) {
+export function rngOf(seedStr) {
   let a = 0;
   for (const ch of seedStr) a = (Math.imul(a ^ ch.charCodeAt(0), 2654435761) + 1) | 0;
   return () => {
@@ -137,7 +137,7 @@ const score = (m) =>
   m.trades < PASS_RULE.minTrain || m.net <= 0 ? -1 : m.pf * Math.min(1, m.trades / 80);
 
 // 2. ランダムな週
-function randomWeeks(trades, fromTs, toTs, rng, n = 40) {
+export function randomWeeks(trades, fromTs, toTs, rng, n = 40) {
   let counted = 0;
   let wins = 0;
   for (let i = 0; i < n; i++) {
@@ -159,7 +159,7 @@ function randomWeeks(trades, fromTs, toTs, rng, n = 40) {
 }
 
 // 3. モンテカルロ（取引を引き直す）
-function monteCarlo(trades, rng, runs = 1000) {
+export function monteCarlo(trades, rng, runs = 1000) {
   const nets = trades.map((t) => t.net);
   const n = nets.length;
   if (!n) return { runs, lossProb: 1, dd95: 0, p5: 0 };

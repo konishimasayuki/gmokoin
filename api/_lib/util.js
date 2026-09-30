@@ -57,7 +57,8 @@ export const DEFAULT_CONFIG = {
   shadowBrains: [], // 影で比較する脳（最大3つ）
   brainModels: {}, // 脳ごとのClaudeモデル（haiku / sonnet / opus）
   shadowIntervalMin: 60, // 影の脳（AI型）の判定間隔
-  aiMode: "rules", // rules=ルールだけで方針を決める（Claude不要・無料） / claude=AIチームが方針を決める
+  aiMode: "rules",
+  optStrategies: ["ww"], // 検証する手法：["ww"]＝クロユキWWのみ / ["all"]＝スキャル・リピートも // rules=ルールだけで方針を決める（Claude不要・無料） / claude=AIチームが方針を決める
   maxSymbols: 5, // 採用する銘柄数の上限
   maxPositions: 3, // 同時に持つポジション数の上限
   maxSameCurrency: 2, // 同じ通貨を同じ向きに持つ数の上限（円売りが重なりすぎないように）

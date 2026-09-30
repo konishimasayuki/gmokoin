@@ -185,6 +185,8 @@ const STRAT = { scalp: "スキャル", grid: "リピート", ww: "クロユキWW
 
 // Claudeに貼り付けて分析してもらうための要約テキスト
 function exportText(result) {
+  if (result.mode === "ww" && result.wwPool)
+    return wwText(result.wwPool, result.totalDays, result.testDays);
   const y = (v) => `${v > 0 ? "+" : ""}${Math.round(v || 0).toLocaleString("ja-JP")}円`;
   const line = (b) =>
     b?.checks
@@ -260,6 +262,115 @@ function checkValue(key, b) {
   return `最大 -${(b.full?.mtmDd ?? b.full?.maxDd ?? 0).toLocaleString("ja-JP")}円`;
 }
 
+const fmtT = (ts) => (ts ? mdhm(ts) : "—");
+const fp = (v, sym) =>
+  v == null ? "—" : Number(v).toFixed(isCryptoSym(sym) ? 0 : sym?.endsWith("JPY") ? 3 : 5);
+const isCryptoSym = (s) => ["BTC_JPY", "ETH_JPY", "XRP_JPY", "BCH_JPY", "LTC_JPY"].includes(s);
+
+function wwText(pool, days, testDays) {
+  const y = (v) => `${v > 0 ? "+" : ""}${Math.round(v || 0).toLocaleString("ja-JP")}円`;
+  const out = [
+    `【クロユキWW 全銘柄まとめ】${days}日（後半${testDays}日）・${pool.symbols}銘柄`,
+    `採用設定: ${pool.label} → ${pool.passed}/6${pool.pass ? " 合格" : ""}`,
+    `学習 PF${pool.train.pf}(${pool.train.trades}回) / 後半 PF${pool.test.pf}(${pool.test.trades}回・${y(pool.test.net)})`,
+    `全期間 ${y(pool.full.net)} ${pool.full.trades}回 勝率${pool.full.winRate}% DD-${Math.round(pool.full.mtmDd).toLocaleString("ja-JP")}円`,
+    `勝ち週${Math.round(pool.weeks.winShare * 100)}%(${pool.weeks.counted}週) / マイナス確率${Math.round(pool.mc.lossProb * 100)}% / 悪条件PF ${pool.stress.pf} / 設定ブレ ${pool.neighbors.ok}/${pool.neighbors.total}`,
+    `✕: ${
+      Object.entries(pool.checks)
+        .filter(([, v]) => !v)
+        .map(([k]) => k)
+        .join(",") || "なし"
+    }`,
+    "■ 銘柄別",
+    ...pool.bySymbol.map(
+      (b) => ` ${symbolLabel(b.symbol)} ${b.trades}回 勝率${b.winRate}% PF${b.pf} ${y(b.net)}`,
+    ),
+    "■ ほかの設定（全銘柄まとめ）",
+    ...pool.others.map((o) => ` ${o.label}：${o.trades}回 勝率${o.winRate}% PF${o.pf} ${y(o.net)}`),
+  ];
+  return out.join("\n");
+}
+
+function wwTradesText(pool) {
+  const out = [
+    "【クロユキWW 取引一覧（新しい順・日本時間）】",
+    "銘柄 売買 エントリー時刻 / A・B・C・D（時刻 価格）/ ミニWネック / 入 損切 利確 / 結果",
+  ];
+  for (const t of pool.sample) {
+    const w = t.ww || {};
+    const pt = (x) => (x ? `${fmtT(x[0])} ${fp(x[1], t.symbol)}` : "—");
+    out.push(
+      `${symbolLabel(t.symbol)} ${t.side === "BUY" ? "買い" : "売り"} ${fmtT(t.openedAt)} / A ${pt(w.A)} B ${pt(w.B)} C ${pt(w.C)} D ${pt(w.D)} / ネック${fp(w.miniNeck, t.symbol)} 反応${w.touches}点 / 入${fp(t.entry, t.symbol)} 損${fp(t.sl, t.symbol)} 利${fp(t.tp, t.symbol)} / ${t.reason} ${t.net > 0 ? "+" : ""}${t.net}円`,
+    );
+  }
+  return out.join("\n");
+}
+
+function WWPool({ pool, days, testDays }) {
+  if (!pool) return <p className="hint">まだ全銘柄の結果がそろっていません。</p>;
+  return (
+    <div className="port-box ww-pool">
+      <div className="opt-head">
+        <b>全銘柄まとめて（{pool.symbols}銘柄）</b>
+        {pool.pass ? <Badge tone="buy">合格</Badge> : <Badge tone="sell">{pool.passed}/6</Badge>}
+      </div>
+      <small>{pool.label}</small>
+      <div className="metrics">
+        <Metric
+          label="損益"
+          value={yen(pool.full.net)}
+          tone={tone(pool.full.net)}
+          sub={`${pool.full.trades}回`}
+        />
+        <Metric label="勝率" value={`${pool.full.winRate}%`} sub={`PF ${pool.full.pf}`} />
+        <Metric
+          label="最大DD"
+          value={`${Math.round(pool.full.mtmDd).toLocaleString("ja-JP")}円`}
+          sub="含み損込み"
+        />
+      </div>
+      <Spark points={pool.curve} height={90} />
+      <ul className="checks">
+        {CHECKS.filter(([k]) => k in pool.checks).map(([k, label]) => (
+          <li key={k} className={pool.checks[k] ? "ok" : "ng"}>
+            <span className="mark" aria-hidden="true">
+              {pool.checks[k] ? "✓" : "✕"}
+            </span>
+            <span>
+              {k === "split"
+                ? `前半${days - testDays}日で選び、後半${testDays}日でも勝てたか`
+                : label}
+              <small className="num">{checkValue(k, pool)}</small>
+            </span>
+          </li>
+        ))}
+      </ul>
+      <table className="tbl">
+        <thead>
+          <tr>
+            <th>銘柄</th>
+            <th>回数</th>
+            <th>勝率</th>
+            <th>損益</th>
+          </tr>
+        </thead>
+        <tbody>
+          {pool.bySymbol.map((b) => (
+            <tr key={b.symbol}>
+              <td>{symbolLabel(b.symbol)}</td>
+              <td className="num">{b.trades}</td>
+              <td className="num">{b.winRate}%</td>
+              <td className={`num ${tone(b.net)}`}>{yen(b.net)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <CopyButton text={wwText(pool, days, testDays)} label="WWの結果をコピー" />
+      <CopyButton text={wwTradesText(pool)} label="WWの取引一覧をコピー（TradingViewで確認用）" />
+    </div>
+  );
+}
+
 function Optimize({ result: raw, loading, onRun, onUse, auto, progress }) {
   // 旧バージョンの結果（5段階チェックなし）は表示しない
   const result = raw?.rule?.weekWin ? raw : null;
@@ -270,7 +381,7 @@ function Optimize({ result: raw, loading, onRun, onUse, auto, progress }) {
   return (
     <Card title="AIによる銘柄・設定の自動選定">
       <p className="hint">
-        FX6銘柄と仮想通貨5銘柄で、スキャルピング約580通り＋リピート72通り＋クロユキWW16通りの設定を90日分のデータで試し、6段階の検証をすべて通ったものだけを採用します。ランダムな週と引き直しは日替わりです。
+        いまはクロユキWWだけを検証しています。FX6銘柄と仮想通貨5銘柄で、16通りの設定を1年分の5分足・15分足で試し、全銘柄をまとめた成績で6段階の検証をします（前半245日で選び、後半120日で確認）。
       </p>
       <button type="button" className="primary" onClick={onRun} disabled={loading.optimize}>
         {loading.optimize ? "検証中…" : auto ? "いま選び直す" : "全銘柄で検証する"}
@@ -291,6 +402,9 @@ function Optimize({ result: raw, loading, onRun, onUse, auto, progress }) {
             {result.applied?.status === "applied" && "・合格した銘柄をすべて採用しました"}
             {result.applied?.status === "blocked" && "・合格なしのため取引を止めています"}
           </p>
+          {result.mode === "ww" && (
+            <WWPool pool={result.wwPool} days={result.totalDays} testDays={result.testDays} />
+          )}
           {result.portfolio?.length > 0 && result.combined && (
             <div className="port-box">
               <b>採用：{result.portfolio.map((p) => symbolLabel(p.symbol)).join("・")}</b>
@@ -399,7 +513,9 @@ function Optimize({ result: raw, loading, onRun, onUse, auto, progress }) {
                               {b.checks[k] ? "✓" : "✕"}
                             </span>
                             <span>
-                              {label}
+                              {k === "split" && result.mode === "ww"
+                                ? `前半${result.totalDays - result.testDays}日で選び、後半${result.testDays}日でも勝てたか`
+                                : label}
                               <small className="num">{checkValue(k, b)}</small>
                             </span>
                           </li>
