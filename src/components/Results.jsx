@@ -185,6 +185,11 @@ const STRAT = { scalp: "スキャル", grid: "リピート", ww: "クロユキWW
 
 // Claudeに貼り付けて分析してもらうための要約テキスト
 function exportText(result) {
+  if (result.mode === "ww" && result.pools)
+    return Object.values(result.pools)
+      .filter(Boolean)
+      .map((p) => wwText(p, p.days, p.testDays))
+      .join("\n\n");
   if (result.mode === "ww" && result.wwPool)
     return wwText(result.wwPool, result.totalDays, result.testDays);
   const y = (v) => `${v > 0 ? "+" : ""}${Math.round(v || 0).toLocaleString("ja-JP")}円`;
@@ -262,6 +267,12 @@ function checkValue(key, b) {
   return `最大 -${(b.full?.mtmDd ?? b.full?.maxDd ?? 0).toLocaleString("ja-JP")}円`;
 }
 
+const METHOD_NAME = {
+  ww: "クロユキWW",
+  oshi: "クロユキ押し戻り",
+  flag: "クロユキフラッグW",
+  sat: "クロユキサテライト",
+};
 const fmtT = (ts) => (ts ? mdhm(ts) : "—");
 const fp = (v, sym) =>
   v == null ? "—" : Number(v).toFixed(isCryptoSym(sym) ? 0 : sym?.endsWith("JPY") ? 3 : 5);
@@ -270,7 +281,7 @@ const isCryptoSym = (s) => ["BTC_JPY", "ETH_JPY", "XRP_JPY", "BCH_JPY", "LTC_JPY
 function wwText(pool, days, testDays) {
   const y = (v) => `${v > 0 ? "+" : ""}${Math.round(v || 0).toLocaleString("ja-JP")}円`;
   const out = [
-    `【クロユキWW 全銘柄まとめ】${days}日（後半${testDays}日）・${pool.symbols}銘柄`,
+    `【${METHOD_NAME[pool.method || "ww"]} 全銘柄まとめ】${days}日（後半${testDays}日）・${pool.symbols}銘柄`,
     `採用設定: ${pool.label} → ${pool.passed}/6${pool.pass ? " 合格" : ""}`,
     `学習 PF${pool.train.pf}(${pool.train.trades}回) / 後半 PF${pool.test.pf}(${pool.test.trades}回・${y(pool.test.net)})`,
     `全期間 ${y(pool.full.net)} ${pool.full.trades}回 勝率${pool.full.winRate}% DD-${Math.round(pool.full.mtmDd).toLocaleString("ja-JP")}円`,
@@ -293,7 +304,7 @@ function wwText(pool, days, testDays) {
 
 function wwTradesText(pool) {
   const out = [
-    "【クロユキWW 取引一覧（新しい順・日本時間）】",
+    `【${METHOD_NAME[pool.method || "ww"]} 取引一覧（新しい順・日本時間）】`,
     "銘柄 売買 エントリー時刻 / A・B・C・D（時刻 価格）/ ミニWネック / 入 損切 利確 / 結果",
   ];
   for (const t of pool.sample) {
@@ -311,7 +322,9 @@ function WWPool({ pool, days, testDays }) {
   return (
     <div className="port-box ww-pool">
       <div className="opt-head">
-        <b>全銘柄まとめて（{pool.symbols}銘柄）</b>
+        <b>
+          {METHOD_NAME[pool.method || "ww"]}：全銘柄まとめて（{pool.symbols}銘柄）
+        </b>
         {pool.pass ? <Badge tone="buy">合格</Badge> : <Badge tone="sell">{pool.passed}/6</Badge>}
       </div>
       <small>{pool.label}</small>
@@ -374,8 +387,8 @@ function WWPool({ pool, days, testDays }) {
           ))}
         </tbody>
       </table>
-      <CopyButton text={wwText(pool, days, testDays)} label="WWの結果をコピー" />
-      <CopyButton text={wwTradesText(pool)} label="WWの取引一覧をコピー（TradingViewで確認用）" />
+      <CopyButton text={wwText(pool, days, testDays)} label="結果をコピー" />
+      <CopyButton text={wwTradesText(pool)} label="取引一覧をコピー（TradingViewで確認用）" />
     </div>
   );
 }
@@ -390,7 +403,7 @@ function Optimize({ result: raw, loading, onRun, onUse, auto, progress }) {
   return (
     <Card title="AIによる銘柄・設定の自動選定">
       <p className="hint">
-        いまはクロユキWWだけを、主要FX6銘柄（ドル円・ユーロ円・ポンド円・豪ドル円・ユーロドル・ポンドドル）で検証しています。16通りの設定を2年分の5分足・15分足で試し、全銘柄をまとめた成績で6段階の検証をします（前の1年で選び、直近1年で答え合わせ）。
+        いまはクロユキ式（WW・押し戻り・フラッグW・サテライト）だけを、主要FX6銘柄（ドル円・ユーロ円・ポンド円・豪ドル円・ユーロドル・ポンドドル）で検証しています。手法ごとに4〜16通りの設定を試し、全銘柄をまとめた成績で6段階の検証をします（サテライトは90日分の1分足で前60日・直近30日、ほかは2年分の5分足・15分足で前の1年・直近1年）。
       </p>
       <button type="button" className="primary" onClick={onRun} disabled={loading.optimize}>
         {loading.optimize ? "検証中…" : auto ? "いま選び直す" : "全銘柄で検証する"}
@@ -411,9 +424,20 @@ function Optimize({ result: raw, loading, onRun, onUse, auto, progress }) {
             {result.applied?.status === "applied" && "・合格した銘柄をすべて採用しました"}
             {result.applied?.status === "blocked" && "・合格なしのため取引を止めています"}
           </p>
-          {result.mode === "ww" && (
-            <WWPool pool={result.wwPool} days={result.totalDays} testDays={result.testDays} />
-          )}
+          {result.mode === "ww" &&
+            (result.pools
+              ? Object.entries(result.pools).map(([k, pool]) =>
+                  pool ? (
+                    <WWPool key={k} pool={pool} days={pool.days} testDays={pool.testDays} />
+                  ) : (
+                    <p key={k} className="hint">
+                      {METHOD_NAME[k]}：この期間に条件を満たす形がありませんでした。
+                    </p>
+                  ),
+                )
+              : result.wwPool && (
+                  <WWPool pool={result.wwPool} days={result.totalDays} testDays={result.testDays} />
+                ))}
           {result.portfolio?.length > 0 && result.combined && (
             <div className="port-box">
               <b>採用：{result.portfolio.map((p) => symbolLabel(p.symbol)).join("・")}</b>

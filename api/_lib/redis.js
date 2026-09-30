@@ -30,6 +30,7 @@ export const K = {
   reportLock: "fxbot:lock:report",
   backtestLast: "fxbot:backtest:last",
   btDay: (symbol, bd) => `fxbot:bt2:${symbol}:${bd}`,
+  optMethod: (symbol, method) => `fxbot:opt:m:${symbol}:${method}`,
   barMonth: (symbol, iv, ym) => `fxbot:bm:${symbol}:${iv}:${ym}`,
   barDay: (symbol, iv, bd) => `fxbot:bd:${symbol}:${iv}:${bd}`,
   optimizeLast: "fxbot:optimize:last",

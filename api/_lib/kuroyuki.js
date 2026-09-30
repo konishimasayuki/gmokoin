@@ -6,6 +6,7 @@ import { SESSION_LABEL, aggregate, sessionOf, sizeUnits } from "./strategy.js";
 import { feeOf, isCrypto, pnlYen, round } from "./util.js";
 
 const MIN = 60000;
+export const METHOD_JP = { ww: "WW", oshi: "押し戻り", flag: "フラッグW", sat: "サテライト" };
 // base＝読み込む足（その足をそのまま執行足にする）
 export const WW_COMBOS = {
   "1h5m": { base: 5, iv: "5min", upper: 60, mid: 15, exec: 5, label: "1時間足×5分足" },
@@ -100,6 +101,8 @@ function dowStates(bars, n) {
   let trend = 0;
   let keyLow = null;
   let keyHigh = null;
+  let keyLowI = -1;
+  let keyHighI = -1;
   let lastH = null;
   let lastL = null;
   const seenH = [];
@@ -109,7 +112,10 @@ function dowStates(bars, n) {
       const h = highs[hi++];
       if (lastH && h.p > lastH.p) {
         const before = seenL.filter((x) => x.i < h.i).at(-1);
-        if (before) keyLow = before.p;
+        if (before) {
+          keyLow = before.p;
+          keyLowI = before.i;
+        }
         trend = 1;
       }
       lastH = h;
@@ -119,7 +125,10 @@ function dowStates(bars, n) {
       const l = lows[lo++];
       if (lastL && l.p < lastL.p) {
         const before = seenH.filter((x) => x.i < l.i).at(-1);
-        if (before) keyHigh = before.p;
+        if (before) {
+          keyHigh = before.p;
+          keyHighI = before.i;
+        }
         trend = -1;
       }
       lastL = l;
@@ -128,12 +137,18 @@ function dowStates(bars, n) {
     const c = bars[k].c;
     if (trend === 1 && keyLow !== null && c < keyLow) {
       trend = -1;
-      keyHigh = lastH ? lastH.p : keyHigh;
+      if (lastH) {
+        keyHigh = lastH.p;
+        keyHighI = lastH.i;
+      }
     } else if (trend === -1 && keyHigh !== null && c > keyHigh) {
       trend = 1;
-      keyLow = lastL ? lastL.p : keyLow;
+      if (lastL) {
+        keyLow = lastL.p;
+        keyLowI = lastL.i;
+      }
     }
-    out[k] = { trend, keyLow, keyHigh };
+    out[k] = { trend, keyLow, keyHigh, keyLowI, keyHighI };
   }
   return out;
 }
@@ -354,6 +369,128 @@ export function detect(v, i, gp, used) {
   return null;
 }
 
+// ---------- 押し戻り手法・フラッグW（売り目線。買いは鏡のチャート） ----------
+function execIndexAt(bars, t) {
+  let lo = 0;
+  let hi = bars.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (bars[mid].t <= t) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+
+// 上位足の戻り高値H0から直近安値Lwへの下げに対して、どれだけ戻したか
+function pullback(v, i, ui, gp) {
+  const st = v.upper.dow[ui];
+  if (st.keyHigh === null || st.keyHighI < 0) return null;
+  const bars = v.exec;
+  const H0 = st.keyHigh;
+  const from = execIndexAt(bars, v.upper.bars[st.keyHighI].t);
+  if (i - from < 12) return null;
+  let Lw = Number.POSITIVE_INFINITY;
+  let iLw = -1;
+  for (let k = from; k <= i; k++) {
+    if (bars[k].l < Lw) {
+      Lw = bars[k].l;
+      iLw = k;
+    }
+  }
+  if (iLw < 0 || i - iLw < 6 || H0 - Lw <= 0) return null;
+  let top = Number.NEGATIVE_INFINITY;
+  for (let k = iLw; k <= i; k++) top = Math.max(top, bars[k].h);
+  if (top >= H0) return null; // 戻り高値を超えた＝前提が崩れた
+  const r = (top - Lw) / (H0 - Lw);
+  if (r < gp.fib) return null;
+  return { H0, Lw, iLw, top, r, fibLine: Lw + gp.fib * (H0 - Lw) };
+}
+
+// 戻りの先端にできたWトップ（執行足）
+function wTopAt(v, i, from, minPrice) {
+  const bars = v.exec;
+  const hs = range(v.small.highs, from + 1, i, i);
+  if (hs.length < 2) return null;
+  const h2 = hs.at(-1);
+  const h1 = hs.at(-2);
+  if (i - h2.i > 12 || h1.p < minPrice || h2.p < minPrice) return null;
+  let m = Number.POSITIVE_INFINITY;
+  for (let k = h1.i + 1; k < h2.i; k++) m = Math.min(m, bars[k].l);
+  if (!Number.isFinite(m)) return null;
+  const r2 = (h2.p - m) / (h1.p - m);
+  if (!(r2 >= 0.5 && r2 <= 1.5)) return null;
+  return { h1, h2, m, D: Math.max(h1.p, h2.p) };
+}
+
+export function detectOshi(v, i, ui, gp, used) {
+  const pb = pullback(v, i, ui, gp);
+  if (!pb) return null;
+  const id = `O${pb.iLw}`;
+  if (used.has(id)) return null;
+  const a = v.execAtr[i];
+  const w = wTopAt(v, i, pb.iLw, pb.fibLine);
+  if (!w) return null;
+  const pts = [{ i: pb.iLw, p: pb.Lw }, ...range(v.small.lows, pb.iLw + 2, i, i)];
+  const tl = trendline(pts, v.exec, pb.iLw, i, a * gp.tlTol);
+  if (!tl) return null;
+  const trig = Math.min(w.m, tl.at(i + 1));
+  if (v.exec[i].c <= trig) return null;
+  if (w.D - trig > 4 * a) return null; // 押し目・戻りから遠すぎる
+  return {
+    id,
+    trig,
+    D: w.D,
+    left: null,
+    dI: w.h1.p >= w.h2.p ? w.h1.i : w.h2.i,
+    touches: tl.touches,
+    A: { i: pb.iLw, p: pb.Lw },
+    B: w.h1,
+    C: { i: w.h1.i, p: w.m },
+    m: w.m,
+  };
+}
+
+export function detectFlag(v, i, ui, gp, used) {
+  const pb = pullback(v, i, ui, gp);
+  if (!pb) return null;
+  const id = `F${pb.iLw}`;
+  if (used.has(id)) return null;
+  const a = v.execAtr[i];
+  const tol = a * gp.tlTol;
+  const hs = range(v.small.highs, pb.iLw + 1, i, i);
+  const ls = [{ i: pb.iLw, p: pb.Lw }, ...range(v.small.lows, pb.iLw + 1, i, i)];
+  if (hs.length < 2 || ls.length < 2) return null;
+  const line = (p0, p1) => {
+    const sl = (p1.p - p0.p) / (p1.i - p0.i);
+    return { sl, at: (k) => p0.p + sl * (k - p0.i) };
+  };
+  const up = line(hs[0], hs.at(-1));
+  const lo = line(ls[0], ls.at(-1));
+  if (!(up.sl > 0 && lo.sl > 0)) return null; // 下降トレンド中の上向きフラッグ
+  if (Math.abs(up.sl - lo.sl) > 0.25 * Math.max(up.sl, lo.sl)) return null; // 平行
+  const upHits = hs.filter((h) => Math.abs(h.p - up.at(h.i)) <= tol).length;
+  const loHits = ls.filter((l) => Math.abs(l.p - lo.at(l.i)) <= tol).length;
+  if (upHits < 2 || loHits < 2) return null;
+  if (hs.some((h) => h.p > up.at(h.i) + tol) || ls.some((l) => l.p < lo.at(l.i) - tol)) return null;
+  const w = wTopAt(v, i, pb.iLw, pb.Lw + 0.3 * (pb.top - pb.Lw));
+  if (!w) return null;
+  const trig = Math.min(w.m, lo.at(i + 1));
+  if (v.exec[i].c <= trig) return null;
+  if (w.D - trig > 4 * a) return null;
+  return {
+    id,
+    trig,
+    D: w.D,
+    left: null,
+    dI: w.h2.i,
+    touches: loHits * 10 + upHits,
+    A: { i: pb.iLw, p: pb.Lw },
+    B: w.h1,
+    C: { i: w.h1.i, p: w.m },
+    m: w.m,
+  };
+}
+
 // ---------- バックテスト ----------
 export function simulateWW(prep, gp, env) {
   const { spread, conv, pip, fromTs, toTs, slip = 0, symbol, cfg } = env;
@@ -382,7 +519,7 @@ export function simulateWW(prep, gp, env) {
     const net = round(pnlYen(pos.side, pos.entry, exit, pos.units, conv) - fee, 0);
     trades.push({
       side: pos.side,
-      setup: pos.side === "BUY" ? "WW買い" : "WW売り",
+      setup: `${METHOD_JP[gp.method || "ww"]}${pos.side === "BUY" ? "買い" : "売り"}`,
       session: SESSION_LABEL[sessionOf(pos.openedAt)] || "その他",
       units: pos.units,
       entry: pos.entry,
@@ -477,9 +614,10 @@ export function simulateWW(prep, gp, env) {
       else if (sell ? lo <= pos.tp : hi >= pos.tp) close(pos.tp, "利確", tEnd);
       else {
         const held = i - pos.i0;
-        if (held >= 2.5 * pos.left && (sell ? lo <= pos.entry : hi >= pos.entry))
+        const left = pos.left || 40; // 押し戻り・フラッグWは時間ルールなし（最長200本で打ち切り）
+        if (pos.left && held >= 2.5 * left && (sell ? lo <= pos.entry : hi >= pos.entry))
           close(pos.entry, "建値撤退", tEnd);
-        else if (held >= 5 * pos.left) close(sell ? b.c + spread : b.c, "時間切れ", tEnd);
+        else if (held >= 5 * left) close(sell ? b.c + spread : b.c, "時間切れ", tEnd);
       }
     }
 
@@ -508,7 +646,13 @@ export function simulateWW(prep, gp, env) {
             if (a0 && bars[k].h - bars[k].l > 3 * a0) spiky = true;
           if (spiky) continue;
         }
-        const s = detect(v, i, gp, used[side]);
+        const method = gp.method || "ww";
+        const s =
+          method === "oshi"
+            ? detectOshi(v, i, ui, gp, used[side])
+            : method === "flag"
+              ? detectFlag(v, i, ui, gp, used[side])
+              : detect(v, i, gp, used[side]);
         if (!s) continue;
         if (gp.level) {
           const zs = zonesAt([v.upper, v.mid], tEnd);
@@ -556,6 +700,48 @@ export function wwCombos() {
   return out;
 }
 
+export function oshiCombos() {
+  const out = [];
+  for (const combo of Object.keys(WW_COMBOS))
+    for (const fib of [0.5, 0.382])
+      for (const level of [true, false])
+        out.push({
+          strategy: "ww",
+          method: "oshi",
+          combo,
+          nExec: 3,
+          fib,
+          level,
+          rr: 1,
+          sma: false,
+          tlTol: 0.25,
+          slBuf: 1,
+          spike: true,
+        });
+  return out;
+}
+
+export function flagCombos() {
+  const out = [];
+  for (const combo of Object.keys(WW_COMBOS))
+    for (const fib of [0.5, 0.382])
+      for (const level of [true, false])
+        out.push({
+          strategy: "ww",
+          method: "flag",
+          combo,
+          nExec: 3,
+          fib,
+          level,
+          rr: 1,
+          sma: false,
+          tlTol: 0.25,
+          slBuf: 1,
+          spike: true,
+        });
+  return out;
+}
+
 export function wwNeighbors(p) {
   return [
     { ...p, nExec: p.nExec === 3 ? 4 : 3 },
@@ -570,5 +756,223 @@ export function wwNeighbors(p) {
 }
 
 export function wwLabel(p) {
+  if (p.method === "oshi" || p.method === "flag")
+    return `クロユキ${METHOD_JP[p.method]}・${WW_COMBOS[p.combo].label}・フィボ${p.fib}以上${p.level ? "・上位足の抵抗帯・支持帯あり" : ""}・利確${p.rr}倍`;
   return `クロユキWW・${WW_COMBOS[p.combo].label}・山谷${p.nExec}本・${p.level ? "上位足の抵抗帯・支持帯あり" : "水平線なし"}${p.sma ? "・20/200SMAの向き" : ""}・利確${p.rr}倍${p.spike === false ? "・急変フィルターなし" : ""}`;
+}
+
+// ---------- 手法③ サテライト・スキャルピング（1分足、ルール案 E章） ----------
+function rci(values, n) {
+  const out = new Array(values.length).fill(null);
+  const denom = n * (n * n - 1);
+  for (let i = n - 1; i < values.length; i++) {
+    const w = [];
+    for (let k = 0; k < n; k++) w.push({ v: values[i - k], t: k + 1 }); // t: 新しい順の順位
+    const sorted = [...w].sort((a, b) => b.v - a.v);
+    let d2 = 0;
+    sorted.forEach((x, r) => {
+      d2 += (x.t - (r + 1)) ** 2;
+    });
+    out[i] = (1 - (6 * d2) / denom) * 100;
+  }
+  return out;
+}
+
+function stdevBands(closes, n, k) {
+  const upper = new Array(closes.length).fill(null);
+  const lower = new Array(closes.length).fill(null);
+  const mid = new Array(closes.length).fill(null);
+  for (let i = n - 1; i < closes.length; i++) {
+    let s = 0;
+    for (let j = i - n + 1; j <= i; j++) s += closes[j];
+    const m = s / n;
+    let v = 0;
+    for (let j = i - n + 1; j <= i; j++) v += (closes[j] - m) ** 2;
+    const sd = Math.sqrt(v / n);
+    mid[i] = m;
+    upper[i] = m + k * sd;
+    lower[i] = m - k * sd;
+  }
+  return { upper, lower, mid };
+}
+
+export function satCombos() {
+  const out = [];
+  for (const dirBars of [3, 5])
+    for (const sma of [false, true])
+      out.push({ strategy: "ww", method: "sat", dirBars, sma, slBuf: 1, spike: true, rr: 0 });
+  return out;
+}
+
+export function satLabel(p) {
+  return `クロユキサテライト・1分足RCI12＋5分/15分RCI25（向き${p.dirBars}本）${p.sma ? "・20SMAの向き" : ""}・2分割決済`;
+}
+
+export function simulateSat(candles, gp, env) {
+  const { spread, conv, pip, fromTs, toTs, slip = 0, symbol, cfg } = env;
+  const m1 = candles;
+  const c1 = m1.map((b) => b.c);
+  const r12 = rci(c1, 12);
+  const bb = stdevBands(c1, 20, 2);
+  const a1 = atr(m1, 14);
+  const m5 = aggregate(m1, 5);
+  const m15 = aggregate(m1, 15);
+  const r5 = rci(
+    m5.map((b) => b.c),
+    25,
+  );
+  const r15 = rci(
+    m15.map((b) => b.c),
+    25,
+  );
+  const s5 = sma(
+    m5.map((b) => b.c),
+    20,
+  );
+  const s15 = sma(
+    m15.map((b) => b.c),
+    20,
+  );
+  // 1分足の時点で確定している5分足・15分足の位置
+  const map = (bigBars, minutes) => {
+    const out = new Int32Array(m1.length).fill(-1);
+    let j = -1;
+    for (let i = 0; i < m1.length; i++) {
+      const tEnd = m1[i].t + MIN;
+      while (j + 1 < bigBars.length && bigBars[j + 1].t + minutes * MIN <= tEnd) j++;
+      out[i] = j;
+    }
+    return out;
+  };
+  const i5 = map(m5, 5);
+  const i15 = map(m15, 15);
+  const scfg = {
+    ...cfg,
+    sizingMode: "risk",
+    riskPct: cfg.sizingMode === "risk" ? cfg.riskPct : 0.5,
+    maxUnits: Math.max(cfg.maxUnits || 0, 1000000),
+  };
+  const trades = [];
+  let pos = null;
+  let equity = cfg.paperBalance;
+  let realized = 0;
+  let peak = 0;
+  let mtmDd = 0;
+  const dirOf = (arr, j, k) =>
+    j - k >= 0 && arr[j] !== null && arr[j - k] !== null ? Math.sign(arr[j] - arr[j - k]) : 0;
+
+  const finish = (t) => {
+    const fee = feeOf(symbol, pos.units, cfg);
+    const net = round(pos.pnl - fee, 0);
+    trades.push({
+      side: pos.side,
+      setup: `サテライト${pos.side === "BUY" ? "買い" : "売り"}`,
+      session: SESSION_LABEL[sessionOf(pos.openedAt)] || "その他",
+      units: pos.units,
+      entry: pos.entry,
+      exit: pos.lastExit,
+      reason: pos.reasons.join("＋"),
+      openedAt: pos.openedAt,
+      closedAt: t,
+      pips: round(pos.pipsSum / 2, 1),
+      net,
+      fee,
+      sl: pos.sl,
+      tp: null,
+    });
+    equity += net;
+    realized += net;
+    pos = null;
+  };
+  const exitPart = (share, px, reason, t) => {
+    const dir = pos.side === "BUY" ? 1 : -1;
+    pos.pnl += pnlYen(pos.side, pos.entry, px, pos.units * share, conv);
+    pos.pipsSum += ((dir * (px - pos.entry)) / pip) * (share * 2);
+    pos.left -= share;
+    pos.lastExit = px;
+    pos.reasons.push(reason);
+    if (pos.left <= 1e-9) finish(t);
+  };
+
+  for (let i = 30; i < m1.length; i++) {
+    const b = m1[i];
+    if (b.t >= toTs) break;
+    const tEnd = b.t + MIN;
+    if (pos) {
+      const buy = pos.side === "BUY";
+      const bidLow = b.l;
+      const askHigh = b.h + spread;
+      if (buy ? bidLow <= pos.sl : askHigh >= pos.sl)
+        exitPart(pos.left, buy ? pos.sl - slip : pos.sl + slip, "損切り", tEnd);
+      else {
+        if (!pos.h1Done && r12[i] !== null && (buy ? r12[i] >= 80 : r12[i] <= -80)) {
+          pos.h1Done = true;
+          exitPart(0.5, buy ? b.c : b.c + spread, "RCI反対側", tEnd);
+        }
+        if (pos && !pos.h2Done && bb.upper[i] !== null) {
+          const band = buy ? bb.upper[i] : bb.lower[i];
+          if (buy ? b.h >= band : b.l + spread <= band) {
+            pos.h2Done = true;
+            exitPart(0.5, band, "反対側の2σ", tEnd);
+          }
+        }
+        if (pos && i - pos.i0 >= 10) exitPart(pos.left, buy ? b.c : b.c + spread, "時間切れ", tEnd);
+      }
+    }
+    if (!pos && b.t >= fromTs && r12[i] !== null && r12[i - 1] !== null) {
+      for (const side of ["BUY", "SELL"]) {
+        const buy = side === "BUY";
+        const crossed = buy ? r12[i - 1] <= -80 && r12[i] > -80 : r12[i - 1] >= 80 && r12[i] < 80;
+        if (!crossed) continue;
+        const want = buy ? 1 : -1;
+        if (dirOf(r5, i5[i], gp.dirBars) !== want || dirOf(r15, i15[i], gp.dirBars) !== want)
+          continue;
+        if (gp.sma && (dirOf(s5, i5[i], 3) !== want || dirOf(s15, i15[i], 3) !== want)) continue;
+        if (timeBlock(tEnd, symbol, side)) continue;
+        let spiky = false;
+        for (let k = Math.max(0, i - 5); k <= i; k++)
+          if (a1[i] && m1[k].h - m1[k].l > 3 * a1[i]) spiky = true;
+        if (spiky) continue;
+        let ext = buy ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY;
+        for (let k = Math.max(0, i - 9); k <= i; k++)
+          ext = buy ? Math.min(ext, m1[k].l) : Math.max(ext, m1[k].h + spread);
+        const entry = buy ? b.c + spread + slip : b.c - slip;
+        const sl = buy ? ext - spread * gp.slBuf : ext + spread * gp.slBuf;
+        const slDist = Math.abs(entry - sl);
+        if (!(slDist > spread * 2) || slDist > 3 * (a1[i] || slDist)) continue;
+        const size = sizeUnits({ cfg: scfg, equity, slDist, conv, symbol, price: entry });
+        if (!size.units) continue;
+        pos = {
+          side,
+          entry,
+          sl,
+          units: size.units,
+          openedAt: tEnd,
+          i0: i,
+          left: 1,
+          pnl: 0,
+          pipsSum: 0,
+          reasons: [],
+          h1Done: false,
+          h2Done: false,
+          lastExit: entry,
+        };
+        break;
+      }
+    }
+    let eq = realized;
+    if (pos)
+      eq +=
+        pnlYen(
+          pos.side,
+          pos.entry,
+          pos.side === "BUY" ? b.c : b.c + spread,
+          pos.units * pos.left,
+          conv,
+        ) + pos.pnl;
+    if (eq > peak) peak = eq;
+    if (peak - eq > mtmDd) mtmDd = peak - eq;
+  }
+  if (pos) exitPart(pos.left, m1.at(-1).c, "期間終了で時価評価", m1.at(-1).t + MIN);
+  return { trades, mtmDd: round(mtmDd, 0) };
 }
