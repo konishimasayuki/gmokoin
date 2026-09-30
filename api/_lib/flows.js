@@ -55,43 +55,69 @@ export function isFixDay(ts) {
 
 export function gotobiCombos() {
   const out = [];
+  const add = (combo, entryHm, exitHm, side, days) =>
+    out.push({ strategy: "flow", method: "gotobi", combo, entryHm, exitHm, side, days, slAtr: 2 });
   // 仲値前に買う（8:00/8:30/9:00に入って9:55に決済）
   for (const entryHm of [480, 510, 540])
-    for (const days of ["fix", "all"])
-      out.push({
-        strategy: "flow",
-        method: "gotobi",
-        combo: "before",
-        entryHm,
-        exitHm: 595,
-        side: "BUY",
-        days,
-        slAtr: 2,
-      });
+    for (const days of ["fix", "all"]) add("before", entryHm, 595, "BUY", days);
   // 仲値後に売る（9:55に入って11:00/12:00に決済）
   for (const exitHm of [660, 720])
-    for (const days of ["fix", "all"])
-      out.push({
-        strategy: "flow",
-        method: "gotobi",
-        combo: "after",
-        entryHm: 595,
-        exitHm,
-        side: "SELL",
-        days,
-        slAtr: 2,
-      });
+    for (const days of ["fix", "all"]) add("after", 595, exitHm, "SELL", days);
+  // 比べる実験（対照）：8:00に逆の売り／同じ約2時間の買いをほかの時間に
+  add("control", 480, 595, "SELL", "all");
+  add("control", 840, 955, "BUY", "all");
+  add("control", 1320, 1435, "BUY", "all");
+  add("control", 180, 295, "BUY", "all");
   return out;
 }
 
-const hm = (m) => `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}`;
+// 5年分の1時間足で、東京の朝の傾向を年ごとに確かめる（比べる実験つき）
+export function tokyoCombos() {
+  const out = [];
+  const add = (entryHm, exitHm, side, days) =>
+    out.push({
+      strategy: "flow",
+      method: "tokyo",
+      combo: String(entryHm),
+      tf: 60,
+      entryHm,
+      exitHm,
+      side,
+      days,
+      slAtr: 2,
+    });
+  for (const [a, b] of [
+    [480, 600],
+    [840, 960],
+    [1320, 1440],
+    [180, 300],
+  ])
+    for (const side of ["BUY", "SELL"]) add(a, b, side, "all");
+  add(480, 600, "BUY", "fix");
+  add(480, 600, "SELL", "fix");
+  return out;
+}
+
+const hm = (m) => `${Math.floor((m % 1440) / 60)}:${String(m % 60).padStart(2, "0")}`;
 export function gotobiLabel(p) {
-  return `仲値${p.combo === "before" ? "前の買い" : "後の売り"}・${hm(p.entryHm)}に入り${hm(p.exitHm)}に決済・${p.days === "fix" ? "ゴトー日と月末だけ" : "毎営業日"}・損切りATR${p.slAtr}倍`;
+  const what =
+    p.combo === "before"
+      ? "仲値前の買い"
+      : p.combo === "after"
+        ? "仲値後の売り"
+        : p.method === "tokyo"
+          ? p.side === "BUY"
+            ? "買い"
+            : "売り"
+          : `【比べる実験】${p.side === "BUY" ? "買い" : "売り"}`;
+  return `${p.tf === 60 ? "5年・1時間足・" : ""}${what}・${hm(p.entryHm)}に入り${hm(p.exitHm)}に決済・${p.days === "fix" ? "ゴトー日と月末だけ" : "毎営業日"}・損切りATR${p.slAtr}倍`;
 }
 
 export function simulateGotobi(bars, p, env) {
   const { spread, conv, pip, fromTs, toTs, slip = 0, symbol, cfg } = env;
-  const a = atr(bars, 12 * 14); // 5分足でおよそ1時間足14本ぶん
+  const tf = p.tf || 5;
+  const a = atr(bars, tf === 60 ? 14 : 12 * 14); // およそ1時間足14本ぶん
+  const hold = (p.exitHm - p.entryHm) * MIN;
   const scfg = riskCfg(cfg);
   const trades = [];
   let equity = cfg.paperBalance;
@@ -129,10 +155,10 @@ export function simulateGotobi(bars, p, env) {
     if (b.t >= toTs) break;
     const q = jst(b.t);
     if (pos) {
-      if (buy ? b.l <= pos.sl : b.h + spread >= pos.sl)
-        close(buy ? pos.sl - slip : pos.sl + slip, "損切り", b.t + 5 * MIN);
-      else if (q.m >= p.exitHm || b.t - pos.openedAt > 6 * 3600000)
-        close(buy ? b.o : b.o + spread, "時刻で決済", b.t);
+      // 決済時刻の足の始値で決済（その足の中の損切りより先に判定）
+      if (b.t - pos.openedAt >= hold) close(buy ? b.o : b.o + spread, "時刻で決済", b.t);
+      else if (buy ? b.l <= pos.sl : b.h + spread >= pos.sl)
+        close(buy ? pos.sl - slip : pos.sl + slip, "損切り", b.t + tf * MIN);
     }
     if (!pos && b.t >= fromTs && q.m === p.entryHm && (p.days === "all" || isFixDay(b.t))) {
       const entry = buy ? b.o + spread + slip : b.o - slip;
@@ -142,7 +168,7 @@ export function simulateGotobi(bars, p, env) {
       const units = unitsFor({ scfg, equity, slDist, conv, symbol, price: entry });
       if (!units) continue;
       pos = { entry, sl, units, openedAt: b.t };
-      if (buy ? b.l <= sl : b.h + spread >= sl) close(sl, "損切り", b.t + 5 * MIN);
+      if (buy ? b.l <= sl : b.h + spread >= sl) close(sl, "損切り", b.t + tf * MIN);
     }
     let eq = realized;
     if (pos) eq += pnlYen(p.side, pos.entry, buy ? b.c : b.c + spread, pos.units, conv);

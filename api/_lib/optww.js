@@ -13,6 +13,7 @@ import {
   gotobiLabel,
   simulateGotobi,
   simulateTrend,
+  tokyoCombos,
   trendCombos,
   trendLabel,
 } from "./flows.js";
@@ -42,7 +43,7 @@ import {
 } from "./util.js";
 
 // 判定ルールを変えたら上げる（同じ日の結果の使い回しを止めるため）
-export const WW_VERSION = 6;
+export const WW_VERSION = 7;
 
 // WWを検証する銘柄（既定は主要FXの6銘柄。仮想通貨は本の対象外なので外す）
 export function wwTargets(cfg) {
@@ -90,6 +91,15 @@ export const METHODS = {
     dims: ["entryHm", "exitHm", "days"],
     days: WW_DAYS_,
     test: WW_TEST_DAYS_,
+    label: gotobiLabel,
+    symbols: ["USD_JPY"],
+  },
+  // 東京の朝の傾向を5年分の1時間足で（ドル円だけ・比べる実験つき）
+  tokyo: {
+    combos: tokyoCombos,
+    dims: ["side", "days"],
+    days: 1825,
+    test: 730,
     label: gotobiLabel,
     symbols: ["USD_JPY"],
   },
@@ -228,6 +238,9 @@ export async function optimizeSymbolWW(symbol, { now = Date.now(), force = false
     }
     const m1 = await loadCandles(symbol, METHODS.sat.days, now);
     const h4 = await loadYearBars(symbol, "4hour", 5, now);
+    const h1 = METHODS.tokyo.symbols.includes(symbol)
+      ? await loadBars(symbol, "1hour", 1825, now)
+      : [];
     const last = bars["1h5m"].at(-1).c;
     const pip = pipSize(symbol, last);
     const spread = (DEFAULT_SPREAD[symbol] || 0.5) * pip;
@@ -245,12 +258,15 @@ export async function optimizeSymbolWW(symbol, { now = Date.now(), force = false
     for (const [mk, M] of Object.entries(METHODS)) {
       if (M.symbols && !M.symbols.includes(symbol)) continue;
       if (mk === "trend" && h4.length < 400) continue;
+      if (mk === "tokyo" && h1.length < 2000) continue;
       const fromTs =
         mk === "sat"
           ? Math.max(now - M.days * DAY, (m1[60] || m1[0] || { t: now }).t)
           : mk === "trend"
             ? Math.max(now - M.days * DAY, h4[210].t)
-            : Math.max(now - M.days * DAY, bars["1h5m"][300].t);
+            : mk === "tokyo"
+              ? Math.max(now - M.days * DAY, h1[30].t)
+              : Math.max(now - M.days * DAY, bars["1h5m"][300].t);
       const testFrom = now - M.test * DAY;
       const env = { spread, conv, pip, symbol, cfg: base, fromTs, toTs: now };
       const combos = M.combos();
@@ -261,7 +277,9 @@ export async function optimizeSymbolWW(symbol, { now = Date.now(), force = false
             ? simulateGotobi(bars["1h5m"], p, e)
             : mk === "trend"
               ? simulateTrend(h4, p, e)
-              : simulateWW(preps[p.combo], p, e);
+              : mk === "tokyo"
+                ? simulateGotobi(h1, p, e)
+                : simulateWW(preps[p.combo], p, e);
       const params = combos.map((p) => {
         const r = m1.length || mk !== "sat" ? run(p, env) : { trades: [], mtmDd: 0 };
         const st =
@@ -328,6 +346,20 @@ export async function optimizeSymbolWW(symbol, { now = Date.now(), force = false
   } finally {
     await redis.del(`${K.optimizeLock}:${symbol}`);
   }
+}
+
+// 年ごとの成績（円高・円安の年で差があるかを見る）
+function yearsOf(trades) {
+  const g = {};
+  for (const t of trades) {
+    const y = new Date(t.closedAt + 9 * 3600000).getUTCFullYear();
+    if (!g[y]) g[y] = [];
+    g[y].push(t);
+  }
+  return Object.entries(g).map(([y, ts]) => {
+    const m = metricsOf(ts, {});
+    return { year: Number(y), trades: m.trades, winRate: m.winRate, pf: m.pf, net: m.net };
+  });
 }
 
 function poolMethod(mk, usable, perSymbolParams, now, balance) {
@@ -420,6 +452,7 @@ function poolMethod(mk, usable, perSymbolParams, now, balance) {
         {},
       ),
     },
+    byYear: yearsOf(top.trades),
     bySymbol: top.per
       .map((z) => {
         const m = metricsOf(z.x.nets.map(toTrade), {});
@@ -444,6 +477,7 @@ function poolMethod(mk, usable, perSymbolParams, now, balance) {
         net: m.net,
         train: { trades: tr.trades, pf: tr.pf, net: tr.net },
         test: { trades: te.trades, pf: te.pf, net: te.net },
+        byYear: yearsOf(x.trades),
       };
     }),
     sample: top.per

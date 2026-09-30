@@ -273,6 +273,7 @@ const METHOD_NAME = {
   flag: "クロユキフラッグW",
   sat: "クロユキサテライト",
   gotobi: "仲値（ゴトー日）",
+  tokyo: "東京の朝（5年・1時間足）",
   trend: "4時間足トレンドフォロー",
 };
 const fmtT = (ts) => (ts ? mdhm(ts) : "—");
@@ -294,6 +295,10 @@ function wwText(pool, days, testDays) {
         .map(([k]) => k)
         .join(",") || "なし"
     }`,
+    pool.byYear ? "■ 年ごと" : "",
+    ...(pool.byYear || []).map(
+      (b) => ` ${b.year}年 ${b.trades}回 勝率${b.winRate}% PF${b.pf} ${y(b.net)}`,
+    ),
     "■ 銘柄別",
     ...pool.bySymbol.map(
       (b) => ` ${symbolLabel(b.symbol)} ${b.trades}回 勝率${b.winRate}% PF${b.pf} ${y(b.net)}`,
@@ -301,7 +306,7 @@ function wwText(pool, days, testDays) {
     "■ ほかの設定（全銘柄まとめ）",
     ...pool.others.map(
       (o) =>
-        ` ${o.label}：${o.trades}回 勝率${o.winRate}% PF${o.pf} ${y(o.net)}${o.test ? `（前 PF${o.train.pf}・${o.train.trades}回 ／ 直近 PF${o.test.pf}・${o.test.trades}回・${y(o.test.net)}）` : ""}`,
+        ` ${o.label}：${o.trades}回 勝率${o.winRate}% PF${o.pf} ${y(o.net)}${o.test ? `（前 PF${o.train.pf}・${o.train.trades}回 ／ 直近 PF${o.test.pf}・${o.test.trades}回・${y(o.test.net)}）` : ""}${o.byYear && o.byYear.length > 2 ? ` 年別PF ${o.byYear.map((b) => `${String(b.year).slice(2)}年${b.pf}`).join(" ")}` : ""}`,
     ),
   ];
   return out.filter(Boolean).join("\n");
