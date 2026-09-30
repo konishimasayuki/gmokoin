@@ -16,6 +16,14 @@ import {
 
 // 判定ルールを変えたら上げる（同じ日の結果の使い回しを止めるため）
 export const WW_VERSION = 2;
+
+// WWを検証する銘柄（既定は主要FXの6銘柄。仮想通貨は本の対象外なので外す）
+export function wwTargets(cfg) {
+  const list = (Array.isArray(cfg.wwSymbols) ? cfg.wwSymbols : []).filter((s) =>
+    SYMBOLS.includes(s),
+  );
+  return list.length ? list : SYMBOLS.filter((s) => !isCrypto(s));
+}
 export const WW_DAYS = 365;
 export const WW_TEST_DAYS = 120;
 const RESULT_TTL = 12 * 3600 * 1000;
@@ -233,10 +241,11 @@ export async function optimizeSymbolWW(symbol, { now = Date.now(), force = false
 export async function finalizeWW({ apply = false, now = Date.now() } = {}) {
   const cfg = mergeConfig(await redis.get(K.config));
   // 1銘柄分が大きいので、まとめて取らずに個別に読む
-  const rows = await Promise.all(SYMBOLS.map((s) => redis.get(K.optSymbol(s))));
-  const results = SYMBOLS.map((s, i) => rows[i] || { symbol: s, error: "未検証" }).map((r) =>
-    r.at && now - r.at > RESULT_TTL ? { ...r, stale: true } : r,
-  );
+  const targets = wwTargets(cfg);
+  const rows = await Promise.all(targets.map((s) => redis.get(K.optSymbol(s))));
+  const results = targets
+    .map((s, i) => rows[i] || { symbol: s, error: "未検証" })
+    .map((r) => (r.at && now - r.at > RESULT_TTL ? { ...r, stale: true } : r));
   const usable = results.filter(
     (r) => r.mode === "ww" && r.version === WW_VERSION && !r.stale && !r.error && r.params,
   );

@@ -58,6 +58,7 @@ export const DEFAULT_CONFIG = {
   brainModels: {}, // 脳ごとのClaudeモデル（haiku / sonnet / opus）
   shadowIntervalMin: 60, // 影の脳（AI型）の判定間隔
   aiMode: "rules",
+  wwSymbols: ["USD_JPY", "EUR_JPY", "GBP_JPY", "AUD_JPY", "EUR_USD", "GBP_USD"], // WWを検証する銘柄（本の監視通貨＝主要FX）
   optStrategies: ["ww"], // 検証する手法：["ww"]＝クロユキWWのみ / ["all"]＝スキャル・リピートも // rules=ルールだけで方針を決める（Claude不要・無料） / claude=AIチームが方針を決める
   maxSymbols: 5, // 採用する銘柄数の上限
   maxPositions: 3, // 同時に持つポジション数の上限

@@ -1,6 +1,6 @@
 import { requireAuth, sendError } from "./_lib/auth.js";
 import { SYMBOLS, finalizeOptimize, optimizeSymbol } from "./_lib/optimize.js";
-import { finalizeWW, optimizeSymbolWW } from "./_lib/optww.js";
+import { finalizeWW, optimizeSymbolWW, wwTargets } from "./_lib/optww.js";
 import { K, redis } from "./_lib/redis.js";
 import { mergeConfig } from "./_lib/util.js";
 
@@ -9,7 +9,11 @@ export default async function handler(req, res) {
   try {
     if (req.method === "GET") {
       const last = await redis.get(K.optimizeLast);
-      return res.status(200).json({ result: last?.rule?.weekWin ? last : null, symbols: SYMBOLS });
+      const c = mergeConfig(await redis.get(K.config));
+      const ww = (c.optStrategies || ["ww"]).join(",") === "ww";
+      return res
+        .status(200)
+        .json({ result: last?.rule?.weekWin ? last : null, symbols: ww ? wwTargets(c) : SYMBOLS });
     }
     if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
     const body = req.body || {};

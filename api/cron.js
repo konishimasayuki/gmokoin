@@ -1,6 +1,6 @@
-import { finalizeWW, optimizeSymbolWW } from "./_lib/optww.js";
+import { finalizeWW, optimizeSymbolWW, wwTargets } from "./_lib/optww.js";
 import { K, addLog, redis } from "./_lib/redis.js";
-import { SYMBOLS, mergeConfig } from "./_lib/util.js";
+import { mergeConfig } from "./_lib/util.js";
 
 // 毎朝の自動検証（Vercel Cron）。前日までのデータを取り込み、クロユキWWの検証を済ませておく
 export default async function handler(req, res) {
@@ -13,8 +13,9 @@ export default async function handler(req, res) {
   const cfg = mergeConfig(await redis.get(K.config));
   if ((cfg.optStrategies || ["ww"]).join(",") !== "ww")
     return res.status(200).json({ skipped: true });
+  const targets = wwTargets(cfg);
   const done = [];
-  for (const s of SYMBOLS) {
+  for (const s of targets) {
     if (Date.now() - started > 230000) break; // 時間切れ前に止める（残りは画面から実行した時に計算）
     try {
       const r = await optimizeSymbolWW(s);
@@ -24,7 +25,7 @@ export default async function handler(req, res) {
     }
   }
   const fin = await finalizeWW({ apply: false });
-  await addLog(`毎朝の自動検証：${done.length}/${SYMBOLS.length}銘柄を準備しました`, "regime");
+  await addLog(`毎朝の自動検証：${done.length}/${targets.length}銘柄を準備しました`, "regime");
   return res.status(200).json({
     done,
     pool: fin.wwPool ? { passed: fin.wwPool.passed, trades: fin.wwPool.full.trades } : null,

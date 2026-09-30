@@ -381,7 +381,7 @@ function Optimize({ result: raw, loading, onRun, onUse, auto, progress }) {
   return (
     <Card title="AIによる銘柄・設定の自動選定">
       <p className="hint">
-        いまはクロユキWWだけを検証しています。FX6銘柄と仮想通貨5銘柄で、16通りの設定を1年分の5分足・15分足で試し、全銘柄をまとめた成績で6段階の検証をします（前半245日で選び、後半120日で確認）。
+        いまはクロユキWWだけを、主要FX6銘柄（ドル円・ユーロ円・ポンド円・豪ドル円・ユーロドル・ポンドドル）で検証しています。16通りの設定を1年分の5分足・15分足で試し、全銘柄をまとめた成績で6段階の検証をします（前半245日で選び、後半120日で確認）。
       </p>
       <button type="button" className="primary" onClick={onRun} disabled={loading.optimize}>
         {loading.optimize ? "検証中…" : auto ? "いま選び直す" : "全銘柄で検証する"}
