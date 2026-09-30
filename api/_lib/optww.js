@@ -15,7 +15,7 @@ import {
 } from "./util.js";
 
 // 判定ルールを変えたら上げる（同じ日の結果の使い回しを止めるため）
-export const WW_VERSION = 3;
+export const WW_VERSION = 4;
 
 // WWを検証する銘柄（既定は主要FXの6銘柄。仮想通貨は本の対象外なので外す）
 export function wwTargets(cfg) {
@@ -24,8 +24,11 @@ export function wwTargets(cfg) {
   );
   return list.length ? list : SYMBOLS.filter((s) => !isCrypto(s));
 }
-export const WW_DAYS = 365;
-export const WW_TEST_DAYS = 120;
+// 2年分：前の1年で設定を選び、直近1年（一度も使っていないデータ）で答え合わせ
+export const WW_DAYS = 730;
+export const WW_TEST_DAYS = 365;
+// 実際に運用する2ペア（検証は統計のため主要6ペアで行い、この2ペアの成績も別に出す）
+export const WW_LIVE_PAIRS = ["USD_JPY", "EUR_USD"];
 const RESULT_TTL = 12 * 3600 * 1000;
 
 const keyOf = (p) => `${p.combo}|${p.nExec}|${p.level ? 1 : 0}|${p.sma ? 1 : 0}`;
@@ -64,7 +67,7 @@ function judge({ trades, testFrom, fromTs, now, stress, nbResults, mtmDd, balanc
   const mc = monteCarlo(trades, rng);
   const nbOk = nbResults.filter((m) => m.pf >= 1 && m.net > 0).length;
   const nbNeed = Math.ceil((nbResults.length * 2) / 3);
-  const minTest = Math.round((PASS_RULE.minTest * WW_TEST_DAYS) / 30);
+  const minTest = 30; // 答え合わせの1年で最低30回
   const checks = {
     split:
       train.pf >= PASS_RULE.trainPf &&
@@ -329,6 +332,23 @@ export async function finalizeWW({ apply = false, now = Date.now() } = {}) {
         const m = metricsOf(x.trades, {});
         return { label: wwLabel(x.p), trades: m.trades, winRate: m.winRate, pf: m.pf, net: m.net };
       }),
+      live: (() => {
+        const lt = top.per
+          .filter((z) => WW_LIVE_PAIRS.includes(z.symbol))
+          .flatMap((z) => z.x.nets.map(toTrade))
+          .sort((a, b) => a.closedAt - b.closedAt);
+        return {
+          pairs: WW_LIVE_PAIRS,
+          train: metricsOf(
+            lt.filter((t) => t.closedAt < testFrom),
+            {},
+          ),
+          test: metricsOf(
+            lt.filter((t) => t.closedAt >= testFrom),
+            {},
+          ),
+        };
+      })(),
       sample: top.per
         .flatMap((z) => z.x.sample)
         .sort((a, b) => b.openedAt - a.openedAt)
@@ -356,7 +376,7 @@ export async function finalizeWW({ apply = false, now = Date.now() } = {}) {
     wwPool,
     portfolio: [],
     applied,
-    note: "クロユキWWだけを1年分の5分足・15分足で検証。全銘柄をまとめた成績で判断します（本の使い方＝多くのペアを見て形が出たものを狙う）。ロットは損失額固定（資金の0.5%）。",
+    note: "クロユキWWだけを2年分の5分足・15分足で検証（前の1年で選び、直近1年で答え合わせ）。全銘柄をまとめた成績で判断します（本の使い方＝多くのペアを見て形が出たものを狙う）。ロットは損失額固定（資金の0.5%）。",
   };
   await redis.set(K.optimizeLast, out, { ex: 60 * 60 * 24 * 30 });
   return out;

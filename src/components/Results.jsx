@@ -288,7 +288,7 @@ function wwText(pool, days, testDays) {
     "■ ほかの設定（全銘柄まとめ）",
     ...pool.others.map((o) => ` ${o.label}：${o.trades}回 勝率${o.winRate}% PF${o.pf} ${y(o.net)}`),
   ];
-  return out.join("\n");
+  return out.filter(Boolean).join("\n");
 }
 
 function wwTradesText(pool) {
@@ -330,6 +330,15 @@ function WWPool({ pool, days, testDays }) {
         />
       </div>
       <Spark points={pool.curve} height={90} />
+      {pool.live && (
+        <p className="meta">
+          運用予定の2ペア（{pool.live.pairs.map((x) => symbolLabel(x)).join("・")}）：前の1年{" "}
+          {pool.live.train.trades}回・勝率
+          {pool.live.train.winRate}%・{yen(pool.live.train.net)} ／ 直近1年 {pool.live.test.trades}
+          回・勝率
+          {pool.live.test.winRate}%・{yen(pool.live.test.net)}
+        </p>
+      )}
       <ul className="checks">
         {CHECKS.filter(([k]) => k in pool.checks).map(([k, label]) => (
           <li key={k} className={pool.checks[k] ? "ok" : "ng"}>
@@ -381,7 +390,7 @@ function Optimize({ result: raw, loading, onRun, onUse, auto, progress }) {
   return (
     <Card title="AIによる銘柄・設定の自動選定">
       <p className="hint">
-        いまはクロユキWWだけを、主要FX6銘柄（ドル円・ユーロ円・ポンド円・豪ドル円・ユーロドル・ポンドドル）で検証しています。16通りの設定を1年分の5分足・15分足で試し、全銘柄をまとめた成績で6段階の検証をします（前半245日で選び、後半120日で確認）。
+        いまはクロユキWWだけを、主要FX6銘柄（ドル円・ユーロ円・ポンド円・豪ドル円・ユーロドル・ポンドドル）で検証しています。16通りの設定を2年分の5分足・15分足で試し、全銘柄をまとめた成績で6段階の検証をします（前の1年で選び、直近1年で答え合わせ）。
       </p>
       <button type="button" className="primary" onClick={onRun} disabled={loading.optimize}>
         {loading.optimize ? "検証中…" : auto ? "いま選び直す" : "全銘柄で検証する"}

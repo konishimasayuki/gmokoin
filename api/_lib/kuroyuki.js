@@ -307,7 +307,8 @@ export function detect(v, i, gp, used) {
       if (!A || Math.abs(s.p - C.p) < Math.abs(A.p - C.p)) A = s;
     }
     if (!A) continue;
-    const id = `${A.i}:${C.i}`;
+    // 同じ左山の高値Bでは1回しか入らない（Wが崩れたらそのWは終わり）
+    const id = `B${B.i}`;
     if (used.has(id)) continue;
     const left = C.i - A.i;
     const elapsed = i - C.i;
