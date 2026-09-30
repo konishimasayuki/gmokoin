@@ -183,6 +183,69 @@ const CHECKS = [
 
 const STRAT = { scalp: "スキャル", grid: "リピート" };
 
+// Claudeに貼り付けて分析してもらうための要約テキスト
+function exportText(result) {
+  const y = (v) => `${v > 0 ? "+" : ""}${Math.round(v || 0).toLocaleString("ja-JP")}円`;
+  const line = (b) =>
+    b?.checks
+      ? [
+          `${STRAT[b.strategy] || "スキャル"} ${b.passed}/${Object.keys(b.checks).length}${b.pass ? " 合格" : ""}「${b.label}」`,
+          `  学習PF ${b.train.pf}(${b.train.trades}回) / 後半PF ${b.test.pf}(${b.test.trades}回・${y(b.test.net)})`,
+          `  全期間 ${y(b.full?.net)} ${b.full?.trades}回 勝率${b.full?.winRate}% 含み損込みDD -${Math.round(b.full?.mtmDd ?? b.full?.maxDd ?? 0).toLocaleString("ja-JP")}円${b.full?.worstAdded ? "（最悪ケース1回を加算済み）" : ""}`,
+          `  勝ち週${Math.round(b.weeks.winShare * 100)}%(${b.weeks.counted}週) / マイナス確率${Math.round(b.mc.lossProb * 100)}% 最悪時-${(b.mc.dd95 || 0).toLocaleString("ja-JP")}円 / 悪条件PF ${b.stress.pf} / 設定ブレ ${b.neighbors.ok}/${b.neighbors.total}`,
+          `  ✕: ${
+            Object.entries(b.checks)
+              .filter(([, v]) => !v)
+              .map(([k]) => k)
+              .join(",") || "なし"
+          }`,
+        ].join("\n")
+      : "  候補なし";
+  const out = [
+    `【自動選定の検証結果】${new Date(result.at).toLocaleString("ja-JP")}・${result.totalDays}日（後半${result.testDays}日）`,
+    `採用（スキャル）: ${result.portfolio?.map((p) => symbolLabel(p.symbol)).join("・") || "なし"}`,
+    result.combined
+      ? `  組み合わせ ${y(result.combined.net)} PF${result.combined.pf} ${result.combined.trades}回 DD-${(result.combined.mtmDd ?? result.combined.maxDd).toLocaleString("ja-JP")}円`
+      : "",
+    `リピート合格: ${result.gridSymbols?.map((s) => symbolLabel(s)).join("・") || "なし"}`,
+    result.combinedGrid
+      ? `  組み合わせ ${y(result.combinedGrid.net)} PF${result.combinedGrid.pf} ${result.combinedGrid.trades}回 DD-${(result.combinedGrid.mtmDd ?? result.combinedGrid.maxDd).toLocaleString("ja-JP")}円`
+      : "",
+  ];
+  for (const r of result.results) {
+    out.push(
+      `■ ${symbolLabel(r.symbol)}${r.error ? `：${r.error}` : ""}${r.stale ? "（古い結果）" : ""}`,
+    );
+    if (r.error) continue;
+    out.push(` [スキャル] ${line(r.bestScalp || (r.best?.strategy !== "grid" ? r.best : null))}`);
+    out.push(` [リピート] ${line(r.bestGrid)}`);
+    if (r.current)
+      out.push(`  いまの設定: PF ${r.current.pf}(${r.current.trades}回・${y(r.current.net)})`);
+  }
+  return out.filter(Boolean).join("\n");
+}
+
+function CopyButton({ text, label = "結果をコピー（Claudeに貼る用）" }) {
+  const [state, setState] = useState("");
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setState("コピーしました。チャットに貼り付けてください");
+    } catch {
+      setState("コピーできませんでした。下の文字を長押しで選択してください");
+    }
+  };
+  return (
+    <div className="copy-box">
+      <button type="button" className="ghost wide" onClick={copy}>
+        {label}
+      </button>
+      {state && <p className="hint">{state}</p>}
+      {state.startsWith("コピーできません") && <textarea readOnly value={text} rows={8} />}
+    </div>
+  );
+}
+
 function checkValue(key, b) {
   if (key === "split") return `後半 PF ${b.test.pf}（${b.test.trades}回・${yen(b.test.net)}）`;
   if (key === "weeks")
@@ -242,8 +305,8 @@ function Optimize({ result: raw, loading, onRun, onUse, auto, progress }) {
                   sub={`勝率${result.combined.winRate}%`}
                 />
                 <Metric
-                  label="最大DD"
-                  value={`${result.combined.maxDd.toLocaleString("ja-JP")}円`}
+                  label="最大DD（含み損込み）"
+                  value={`${(result.combined.mtmDd ?? result.combined.maxDd).toLocaleString("ja-JP")}円`}
                   sub={`マイナス確率${Math.round(result.combined.mc.lossProb * 100)}%`}
                 />
               </div>
@@ -267,8 +330,8 @@ function Optimize({ result: raw, loading, onRun, onUse, auto, progress }) {
                   sub={`勝率${result.combinedGrid.winRate}%`}
                 />
                 <Metric
-                  label="最大DD"
-                  value={`${result.combinedGrid.maxDd.toLocaleString("ja-JP")}円`}
+                  label="最大DD（含み損込み）"
+                  value={`${(result.combinedGrid.mtmDd ?? result.combinedGrid.maxDd).toLocaleString("ja-JP")}円`}
                   sub={`マイナス確率${Math.round(result.combinedGrid.mc.lossProb * 100)}%`}
                 />
               </div>
@@ -348,6 +411,7 @@ function Optimize({ result: raw, loading, onRun, onUse, auto, progress }) {
             })}
           </div>
           <p className="hint">{result.note}</p>
+          <CopyButton text={exportText(result)} />
         </>
       )}
     </Card>
@@ -419,10 +483,25 @@ function Backtest({ result, loading, onRun, symbol }) {
           <Breakdown title="セットアップ別" rows={result.bySetup} />
           <Breakdown title="決済理由別" rows={result.byReason} />
           <p className="hint">{result.note}</p>
+          <CopyButton text={backtestText(result)} />
         </>
       )}
     </Card>
   );
+}
+
+function backtestText(r) {
+  const m = r.metrics;
+  const t = (rows) =>
+    (rows || []).map((x) => `${x.name} ${x.trades}回 勝率${x.winRate}% ${x.net}円`).join(" / ");
+  return [
+    `【バックテスト】${symbolLabel(r.symbol)} ${r.days}日 スプレッド${r.spreadPips}${r.unit || "pips"}`,
+    `損益${m.net}円 ${m.trades}回 勝率${m.winRate}% PF${m.pf} 最大DD${m.maxDd}円 平均${m.avgPips} 勝ち平均${m.avgWin} 負け平均${m.avgLoss} 手数料${m.fees}円`,
+    `設定: ${JSON.stringify(r.config)}`,
+    `時間帯: ${t(r.bySession)}`,
+    `セットアップ: ${t(r.bySetup)}`,
+    `決済理由: ${t(r.byReason)}`,
+  ].join("\n");
 }
 
 function History({ trades, logs }) {

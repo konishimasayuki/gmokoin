@@ -286,13 +286,38 @@ export async function optimizeSymbol(symbol, { now = Date.now() } = {}) {
     const gridPick = pick(gridCombos(), 5);
 
     const rng = rngOf(`${businessDate(now)}:${symbol}`);
+    // リピートは「レンジ抜けの全決済」が期間中に起きていないと勝率100%に見えてしまう。
+    // その場合は最悪ケース（設定した最大損失）を1回起きたものとして加えて評価する
+    const withWorst = (p, trades) => {
+      if (p.strategy !== "grid" || trades.some((t) => t.reason === "想定外ラインで全決済"))
+        return trades;
+      const loss = -round((base.paperBalance * p.riskPct) / 100, 0);
+      return [
+        ...trades,
+        {
+          net: loss,
+          pips: 0,
+          units: 0,
+          fee: 0,
+          openedAt: now - 1,
+          closedAt: now - 1,
+          reason: "最悪ケース（想定）",
+        },
+      ];
+    };
     const evaluate = ({ p, train }) => {
       const test = metrics(p, testFrom, now);
       const fullRun = run(p, fromTs, now);
-      const full = { ...metricsOf(fullRun.trades, base), mtmDd: fullRun.mtmDd };
+      fullRun.trades = withWorst(p, fullRun.trades);
+      const full = {
+        ...metricsOf(fullRun.trades, base),
+        mtmDd: fullRun.mtmDd,
+        worstAdded: fullRun.trades.at(-1)?.reason === "最悪ケース（想定）",
+      };
       const weeks = randomWeeks(fullRun.trades, fromTs, now, rng);
       const mc = monteCarlo(fullRun.trades, rng);
-      const stress = metrics(p, fromTs, now, { spread: spread * 2, slip });
+      const stressRun = run(p, fromTs, now, { spread: spread * 2, slip });
+      const stress = { ...metricsOf(withWorst(p, stressRun.trades), base), mtmDd: stressRun.mtmDd };
       const nb = (p.strategy === "grid" ? gridNeighbors(p) : neighborsOf(p)).map((q) =>
         metrics(q, fromTs, now),
       );
@@ -384,12 +409,15 @@ function combine(list, rng) {
     nets.map(([, n]) => ({ net: n })),
     rng,
   );
+  const mtmDdSum = list.reduce((s, r) => s + (r.best.full?.mtmDd || 0), 0);
   return {
     trades: nets.length,
     net: round(eq, 0),
     pf: gl > 0 ? round(gw / gl, 2) : gw > 0 ? 99 : 0,
     winRate: nets.length ? round((wins / nets.length) * 100, 1) : 0,
     maxDd: round(maxDd, 0),
+    // 含み損込みの最大DD（銘柄ごとの合計。同時に起きた前提の保守的な概算）
+    mtmDd: round(Math.max(maxDd, mtmDdSum), 0),
     mc,
     curve: curve.filter((_, i) => i % step === 0 || i === curve.length - 1),
   };

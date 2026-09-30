@@ -1224,3 +1224,16 @@ h3 {
   font-size: 0.75rem;
   color: var(--muted);
 }
+.copy-box {
+  margin-top: 8px;
+  display: grid;
+  gap: 6px;
+}
+.copy-box textarea {
+  width: 100%;
+  font-size: 0.75rem;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+}

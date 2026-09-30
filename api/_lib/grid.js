@@ -60,9 +60,11 @@ export function simulateGrid(prep, gp, env) {
     });
   };
 
+  let lastBar = null;
   for (let k = 0; k < m5.length; k++) {
     const c = m5[k];
     if (c.t >= toTs) break;
+    lastBar = c;
     const bd = m5bd[k];
     if (!bd) continue;
     const t = c.t + 5 * 60000;
@@ -168,5 +170,17 @@ export function simulateGrid(prep, gp, env) {
     if (eq > peak) peak = eq;
     if (peak - eq > mtmDd) mtmDd = peak - eq;
   }
-  return { trades, mtmDd: round(mtmDd, 0), openAtEnd: open.length };
+  // 期間の終わりに残っているポジションは時価で決済扱い（含み損を利益の計算から隠さない）
+  const openAtEnd = open.length;
+  if (lastBar) {
+    for (const p of open) {
+      closePos(
+        p,
+        p.side === "BUY" ? lastBar.c : lastBar.c + spread,
+        "期間終了で時価評価",
+        lastBar.t + 5 * 60000,
+      );
+    }
+  }
+  return { trades, mtmDd: round(mtmDd, 0), openAtEnd };
 }
