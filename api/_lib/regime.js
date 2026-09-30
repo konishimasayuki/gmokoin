@@ -10,6 +10,7 @@ import {
   businessDate,
   clamp,
   hmToTs,
+  isCrypto,
   jstHM,
   jstLabel,
   mergeConfig,
@@ -54,7 +55,8 @@ function bars(candles, d) {
 function marketBlock({ cfg, now, t, h1, m5, levels, brief }) {
   const sym = cfg.symbol;
   const [base, quote] = sym.split("_");
-  const pip = pipSize(sym);
+  const pip = pipSize(sym, (t.bid + t.ask) / 2);
+  const u = isCrypto(sym) ? "bp（価格の0.01%）" : "pips";
   const d = priceDigits(sym);
   const h1c = h1.map((c) => c.c);
   const e20 = ema(h1c, 20).at(-1);
@@ -67,7 +69,7 @@ function marketBlock({ cfg, now, t, h1, m5, levels, brief }) {
   return `# 対象
 銘柄: ${base}/${quote}
 現在時刻: ${jstLabel(now)}
-現在レート: bid ${t.bid.toFixed(d)} / ask ${t.ask.toFixed(d)}（スプレッド ${round((t.ask - t.bid) / pip, 1)} pips）
+現在レート: bid ${t.bid.toFixed(d)} / ask ${t.ask.toFixed(d)}（スプレッド ${round((t.ask - t.bid) / pip, 1)} ${u}）
 
 # 水平線マップ（プログラムで計算済み）
 ${levelsSummaryText(levels)}
@@ -83,8 +85,8 @@ ${bars(m5last, d)}
 
 # 参考指標
 1時間足 EMA20=${f(e20)} / EMA50=${f(e50)}
-ATR14: 1時間足 ${h1atr ? round(h1atr / pip, 1) : "不明"} pips / 5分足 ${m5atr ? round(m5atr / pip, 1) : "不明"} pips
-直近4時間の変化: ${chg4h === null ? "不明" : `${round(chg4h, 1)} pips`}`;
+ATR14: 1時間足 ${h1atr ? round(h1atr / pip, 1) : "不明"} ${u} / 5分足 ${m5atr ? round(m5atr / pip, 1) : "不明"} ${u}
+直近4時間の変化: ${chg4h === null ? "不明" : `${round(chg4h, 1)} ${u}`}${isCrypto(sym) ? "\n※暗号資産（取引所レバレッジ、最大2倍）。24時間365日取引され、経済指標よりも米国株・金利・ETF資金流出入・規制・大口の動きに反応しやすい。max_spread_pips は bp 単位で答える。" : ""}`;
 }
 
 function chairPrompt(block, cfg, hasBrief) {
@@ -190,7 +192,7 @@ export async function runRegime({ force = false } = {}) {
   if (!ok) return { regime: current, busy: true };
   try {
     const [tickers, m5raw, h1raw, levels, brief] = await Promise.all([
-      getTickers(),
+      getTickers(cfg.symbol),
       getRecentKlines(cfg.symbol, "5min", now, 2),
       getRecentKlines(cfg.symbol, "1hour", now, 4),
       ensureLevels(cfg.symbol).catch(() => null),

@@ -4,7 +4,7 @@ import { computeScalpIndicators } from "./indicators.js";
 import { LEVELS_TTL_MS } from "./levels.js";
 import { K, acquireLock, addLog, getLogs, getTrades, redis } from "./redis.js";
 import {
-  SESSIONS,
+  SESSION_LABEL,
   buildHtf,
   htfDirAt,
   levelInPath,
@@ -18,6 +18,8 @@ import {
 } from "./strategy.js";
 import {
   businessDate,
+  feeOf,
+  isCrypto,
   jstHM,
   mergeConfig,
   pipSize,
@@ -25,6 +27,7 @@ import {
   priceDigits,
   quoteToJpy,
   round,
+  unitLabel,
 } from "./util.js";
 
 export const EMPTY_DAILY = { pnl: 0, trades: 0, wins: 0 };
@@ -45,11 +48,11 @@ function no(why, waiting = false) {
 
 // ---- 決済
 async function closeTrade({ pos, exit, reason, closedAt, cfg, conv, daily, stats, streak }) {
-  const pip = pipSize(pos.symbol);
+  const pip = pos.pip || pipSize(pos.symbol, pos.entry);
   const dir = pos.side === "BUY" ? 1 : -1;
   const pips = round((dir * (exit - pos.entry)) / pip, 1);
   const gross = round(pnlYen(pos.side, pos.entry, exit, pos.units, conv), 0);
-  const fee = cfg.feeOn ? round(cfg.feePerUnit * pos.units * 2, 0) : 0;
+  const fee = round(feeOf(pos.symbol, pos.units, cfg), 0);
   const net = gross - fee;
   const bd = businessDate(closedAt);
   const trade = {
@@ -169,8 +172,9 @@ function evaluateEntry(x) {
     now,
     equity,
     conv,
+    pip,
   } = x;
-  const pip = pipSize(cfg.symbol);
+  const unit = unitLabel(cfg.symbol);
   const digits = priceDigits(cfg.symbol);
   if (t.status !== "OPEN") return no("市場クローズ中");
   if (cfg.symbolMode === "auto" && cfg.autoBlocked)
@@ -178,9 +182,9 @@ function evaluateEntry(x) {
   const ses = sessionAllowed(now, cfg);
   if (!ses.ok)
     return no(
-      ses.key
-        ? `${SESSIONS[ses.key].label}時間は取引しない設定`
-        : "取引時間外（早朝・時間帯の切り替わり）",
+      ses.key === "other"
+        ? "取引時間外（早朝・時間帯の切り替わり）"
+        : `${SESSION_LABEL[ses.key]}時間は取引しない設定`,
     );
   if (pauseUntil && now < pauseUntil) return no(`連敗ストップ中（${jstHM(pauseUntil)}まで）`);
   if (!regime) return no("Claudeの相場判定待ち");
@@ -199,15 +203,15 @@ function evaluateEntry(x) {
   const rs =
     Number(regime.max_spread_pips) > 0 ? Number(regime.max_spread_pips) : Number.POSITIVE_INFINITY;
   if (market.spreadPips > Math.min(cfg.maxSpreadPips, rs))
-    return no(`スプレッド拡大（${market.spreadPips}pips）`);
+    return no(`スプレッド拡大（${market.spreadPips}${unit}）`);
   if (cfg.rr < cfg.minRr) return no(`リスクリワード${cfg.rr}が下限${cfg.minRr}未満`);
 
   const tf = cfg.signalTf === 5 ? 5 : 1;
   const L = candles.length - 1;
   if (L < 60) return no(`${tf}分足データ不足`);
   const aPips = ind.atr14[L] / pip;
-  if (aPips < cfg.minAtrPips) return no(`値動きが小さい（ATR ${round(aPips, 1)}pips）`);
-  if (aPips > cfg.maxAtrPips) return no(`値動きが荒い（ATR ${round(aPips, 1)}pips）`);
+  if (aPips < cfg.minAtrPips) return no(`値動きが小さい（ATR ${round(aPips, 1)}${unit}）`);
+  if (aPips > cfg.maxAtrPips) return no(`値動きが荒い（ATR ${round(aPips, 1)}${unit}）`);
   const c = candles[L];
   if (lastSignal && Number(lastSignal) === c.t) return no("同じ足では再エントリーしない");
 
@@ -237,13 +241,19 @@ function evaluateEntry(x) {
     if (hit)
       return no(`利確までの間に${hit.frame}の水平線（${hit.price}・反発${hit.touches}回）`, true);
   }
-  const size = sizeUnits({ cfg, equity, slDist: lv.slDist, conv });
+  const size = sizeUnits({
+    cfg,
+    equity,
+    slDist: lv.slDist,
+    conv,
+    symbol: cfg.symbol,
+    price: entry,
+  });
   if (!size.units) return no(size.why);
   return { ok: true, ...sig, ...lv, entry, units: size.units, lastT: c.t, session: ses.key };
 }
 
-async function openPosition({ ev, cfg, t, regime, now }) {
-  const pip = pipSize(cfg.symbol);
+async function openPosition({ ev, cfg, t, regime, now, pip }) {
   const digits = priceDigits(cfg.symbol);
   const pos = {
     id: `${now.toString(36)}${Math.random().toString(36).slice(2, 6)}`,
@@ -270,7 +280,7 @@ async function openPosition({ ev, cfg, t, regime, now }) {
   };
   await redis.pipeline().set(K.position, pos).set(K.lastSignal, ev.lastT, { ex: 3600 }).exec();
   await addLog(
-    `${SIDE_JP[ev.side]}エントリー（${ev.setup}）${ev.units.toLocaleString("ja-JP")}通貨 @${ev.entry.toFixed(digits)} 損切${ev.sl.toFixed(digits)} 利確${ev.tp.toFixed(digits)}`,
+    `${SIDE_JP[ev.side]}エントリー（${ev.setup}）${ev.units.toLocaleString("ja-JP")}${isCrypto(cfg.symbol) ? cfg.symbol.split("_")[0] : "通貨"} @${ev.entry.toFixed(digits)} 損切${ev.sl.toFixed(digits)} 利確${ev.tp.toFixed(digits)}`,
     "entry",
   );
   return pos;
@@ -280,11 +290,11 @@ function withUnrealized(pos, t, cfg, conv) {
   if (!pos || !t) return pos;
   const price = pos.side === "BUY" ? t.bid : t.ask;
   const dir = pos.side === "BUY" ? 1 : -1;
-  const fee = cfg.feeOn ? cfg.feePerUnit * pos.units * 2 : 0;
+  const fee = feeOf(pos.symbol, pos.units, cfg);
   return {
     ...pos,
     price,
-    pips: round((dir * (price - pos.entry)) / pipSize(pos.symbol), 1),
+    pips: round((dir * (price - pos.entry)) / (pos.pip || pipSize(pos.symbol, pos.entry)), 1),
     yen: round(pnlYen(pos.side, pos.entry, price, pos.units, conv) - fee, 0),
   };
 }
@@ -314,7 +324,7 @@ export async function runTick({ full = false } = {}) {
   const cfg = mergeConfig(storedCfg);
   const bd = businessDate(now);
   const [tickers, raw, extra] = await Promise.all([
-    getTickers(),
+    getTickers(cfg.symbol),
     getCachedKlines(cfg.symbol, "1min", now),
     redis.mget(K.daily(bd), K.levels(cfg.symbol), K.brief(cfg.symbol, bd)),
   ]);
@@ -322,7 +332,7 @@ export async function runTick({ full = false } = {}) {
   const t = tickers[cfg.symbol];
   if (!t) throw new Error(`${cfg.symbol}のレートを取得できません`);
   const conv = quoteToJpy(cfg.symbol, tickers) ?? 1;
-  const pip = pipSize(cfg.symbol);
+  const pip = pipSize(cfg.symbol, (t.bid + t.ask) / 2);
   const market = {
     bid: t.bid,
     ask: t.ask,
@@ -406,10 +416,11 @@ export async function runTick({ full = false } = {}) {
           htf,
           now,
           equity: cfg.paperBalance + stats.net,
+          pip,
           conv,
         });
         if (ev.ok) {
-          pos = await openPosition({ ev, cfg, t, regime, now });
+          pos = await openPosition({ ev, cfg, t, regime, now, pip });
           decision = { state: "entered", text: `${SIDE_JP[ev.side]}エントリー（${ev.setup}）` };
         } else {
           decision = { state: ev.waiting ? "watching" : "blocked", text: ev.why };
@@ -444,7 +455,12 @@ export async function runTick({ full = false } = {}) {
     equity: round(cfg.paperBalance + stats.net, 0),
     streak,
     pauseUntil: pausedUntil && pausedUntil > now ? pausedUntil : null,
-    session: { key: ses.key, label: ses.key ? SESSIONS[ses.key].label : "時間外", ok: ses.ok },
+    session: {
+      key: ses.key,
+      label: ses.key === "other" && !ses.ok ? "時間外" : SESSION_LABEL[ses.key],
+      ok: ses.ok,
+    },
+    unit: unitLabel(cfg.symbol),
     nearest: nearestLevels(levels, (t.bid + t.ask) / 2),
     decision,
     watch:
@@ -485,7 +501,7 @@ export async function manualClose() {
     );
     if (!pos) return { closed: null };
     const cfg = mergeConfig(storedCfg);
-    const tickers = await getTickers();
+    const tickers = await getTickers(pos.symbol);
     const t = tickers[pos.symbol];
     if (!t || t.status !== "OPEN") throw new Error("市場クローズ中のため決済できません");
     const dailyRaw = await redis.get(K.daily(businessDate(now)));

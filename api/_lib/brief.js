@@ -1,7 +1,7 @@
 // 毎朝のブリーフ：ファンダ担当＋事実確認担当
 import { arr, askClaude } from "./claude.js";
 import { K, acquireLock, addLog, redis } from "./redis.js";
-import { businessDate, businessHmToTs, jstLabel, mergeConfig } from "./util.js";
+import { businessDate, businessHmToTs, isCrypto, jstLabel, mergeConfig } from "./util.js";
 
 const SYSTEM = `あなたはFX自動売買システムの「ファンダメンタル担当」兼「事実確認担当」です。
 - 役割は、今日の取引に影響する経済指標とニュースを、事実ベースで整理すること。売買の指示は出さない。
@@ -12,13 +12,14 @@ const SYSTEM = `あなたはFX自動売買システムの「ファンダメン�
 
 function prompt({ symbol, now, bd }) {
   const [base, quote] = symbol.split("_");
+  const crypto = isCrypto(symbol);
   return `# 対象
 銘柄: ${base}/${quote}
 現在: ${jstLabel(now)}（取引日 ${bd}、日本時間6:00区切り）
 
 # やること
-1. web_searchで、今日（取引日内）と今週の ${base}・${quote} 関連の重要経済指標を調べる（発表時刻JST、予想、前回）。
-2. 直近24時間の要人発言・中銀・地政学などのニュースを調べ、事実関係を確認する。
+1. web_searchで、今日（取引日内）と今週の ${crypto ? "米国の重要経済指標（CPI・雇用統計・FOMCなど、暗号資産も大きく動くもの）" : `${base}・${quote} 関連の重要経済指標`}を調べる（発表時刻JST、予想、前回）。
+2. 直近24時間の${crypto ? `${base}に関するニュース（ETFの資金流出入、規制、取引所・ハッキング、大口の送金など）と要人発言` : "要人発言・中銀・地政学などのニュース"}を調べ、事実関係を確認する。
 3. 各ニュースを「確認済み／未確認／誇張の可能性」に分類する。
 
 # 出力（JSONのみ）

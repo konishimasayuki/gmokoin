@@ -196,7 +196,7 @@ function Optimize({ result: raw, loading, onRun, onUse, auto, progress }) {
   return (
     <Card title="AIによる銘柄・設定の自動選定">
       <p className="hint">
-        全銘柄で約580通りの設定を90日分のデータで試し、5段階の検証をすべて通ったものだけを採用します。ランダムな週と引き直しは日替わりです。
+        FX6銘柄と仮想通貨5銘柄で、それぞれ約580通りの設定を90日分のデータで試し、5段階の検証をすべて通ったものだけを採用します。ランダムな週と引き直しは日替わりです。
       </p>
       <button type="button" className="primary" onClick={onRun} disabled={loading.optimize}>
         {loading.optimize ? "検証中…" : auto ? "いま選び直す" : "全銘柄で検証する"}
@@ -327,7 +327,8 @@ function Backtest({ result, loading, onRun }) {
       ) : (
         <>
           <p className="meta">
-            {mdhm(result.at)} 実行・{result.days}日・スプレッド{result.spreadPips}pips
+            {mdhm(result.at)} 実行・{result.days}日・スプレッド{result.spreadPips}
+            {result.unit || "pips"}
           </p>
           <div className="metrics">
             <Metric
@@ -341,7 +342,8 @@ function Backtest({ result, loading, onRun }) {
           </div>
           <Spark points={result.curve} />
           <p className="meta">
-            平均 {m.avgPips}pips／勝ち平均 {yen(m.avgWin)}／負け平均 {yen(m.avgLoss)}
+            平均 {m.avgPips}
+            {result.unit || "pips"}／勝ち平均 {yen(m.avgWin)}／負け平均 {yen(m.avgLoss)}
           </p>
           <Breakdown title="時間帯別" rows={result.bySession} />
           <Breakdown title="セットアップ別" rows={result.bySetup} />

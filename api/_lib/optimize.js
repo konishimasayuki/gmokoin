@@ -14,7 +14,17 @@ import {
   simulate,
 } from "./backtest.js";
 import { K, acquireLock, addLog, redis } from "./redis.js";
-import { SYMBOLS, businessDate, mergeConfig, pipSize, priceDigits, round } from "./util.js";
+import {
+  ASSET_DEFAULTS,
+  SYMBOLS,
+  assetOf,
+  businessDate,
+  isCrypto,
+  mergeConfig,
+  pipSize,
+  priceDigits,
+  round,
+} from "./util.js";
 
 export const TOTAL_DAYS = 90;
 export const TEST_DAYS = 30;
@@ -33,19 +43,44 @@ export const PASS_RULE = {
   neighbors: 4,
 };
 
-const SESSION_SETS = [
-  { tokyo: true, london: false, ny: false },
-  { tokyo: false, london: true, ny: false },
-  { tokyo: false, london: false, ny: true },
-  { tokyo: true, london: true, ny: false },
-  { tokyo: true, london: false, ny: true },
-  { tokyo: true, london: true, ny: true },
+const S = (tokyo, london, ny, other = false) => ({ tokyo, london, ny, other });
+const FX_SESSION_SETS = [
+  S(true, false, false),
+  S(false, true, false),
+  S(false, false, true),
+  S(true, true, false),
+  S(true, false, true),
+  S(true, true, true),
+];
+// 仮想通貨は24時間動くので「早朝・その他」も候補に入れる
+const CRYPTO_SESSION_SETS = [
+  S(true, true, true, true),
+  S(true, true, true, false),
+  S(false, true, true, false),
+  S(true, false, false, true),
+  S(false, false, true, true),
+  S(true, false, false, false),
 ];
 
-function grid() {
+// 値幅の単位は FX=pips、仮想通貨=bp（価格の0.01%）
+const LIMITS = {
+  fx: {
+    1: { slMin: 2, slMax: 8, minAtr: 0.4, maxAtr: 6 },
+    5: { slMin: 3, slMax: 15, minAtr: 1.0, maxAtr: 15 },
+  },
+  crypto: {
+    1: { slMin: 5, slMax: 60, minAtr: 2, maxAtr: 60 },
+    5: { slMin: 10, slMax: 150, minAtr: 4, maxAtr: 150 },
+  },
+};
+
+function grid(symbol) {
+  const crypto = isCrypto(symbol);
+  const sets = crypto ? CRYPTO_SESSION_SETS : FX_SESSION_SETS;
+  const lim = crypto ? LIMITS.crypto : LIMITS.fx;
   const out = [];
   for (const tf of [1, 5])
-    for (const sessions of SESSION_SETS)
+    for (const sessions of sets)
       for (const beOn of [false, true])
         for (const rr of [1.0, 1.5, 2.0])
           for (const slAtrMult of [1.5, 2.5])
@@ -58,20 +93,24 @@ function grid() {
                   beTriggerR: 1.0,
                   rr,
                   slAtrMult,
-                  slMinPips: tf === 5 ? 3 : 2,
-                  slMaxPips: tf === 5 ? 15 : 8,
+                  slMinPips: lim[tf].slMin,
+                  slMaxPips: lim[tf].slMax,
                   htfFilter,
                   timeStopMin,
-                  minAtrPips: tf === 5 ? 1.0 : 0.4,
-                  maxAtrPips: tf === 5 ? 15 : 6,
+                  minAtrPips: lim[tf].minAtr,
+                  maxAtrPips: lim[tf].maxAtr,
                 });
   return out;
 }
 
 export function describe(p) {
-  const ses = [p.sessions.tokyo && "東京", p.sessions.london && "ロンドン", p.sessions.ny && "NY"]
-    .filter(Boolean)
-    .join("・");
+  const x = p.sessions;
+  const ses =
+    x.tokyo && x.london && x.ny && x.other
+      ? "24時間"
+      : [x.tokyo && "東京", x.london && "ロンドン", x.ny && "NY", x.other && "早朝"]
+          .filter(Boolean)
+          .join("・");
   return `${p.signalTf}分足・${ses}・利確${p.rr}倍・損切りATR${p.slAtrMult}倍・${p.beOn ? "建値あり" : "建値なし"}・${p.htfFilter ? "上位足フィルターあり" : "フィルターなし"}・最長${p.timeStopMin}分`;
 }
 
@@ -159,10 +198,13 @@ export async function optimizeSymbol(symbol, { now = Date.now() } = {}) {
   const ok = await acquireLock(`${K.optimizeLock}:${symbol}`, 290);
   if (!ok) throw new Error(`${symbol}は検証中です`);
   try {
-    const base = mergeConfig(await redis.get(K.config));
-    const pip = pipSize(symbol);
+    const stored = mergeConfig(await redis.get(K.config));
+    // 銘柄の種類（FX/仮想通貨）に合わせた単位の既定値で比較する
+    const base =
+      assetOf(symbol) === assetOf(stored.symbol)
+        ? stored
+        : { ...stored, ...ASSET_DEFAULTS[assetOf(symbol)] };
     const digits = priceDigits(symbol);
-    const spread = (DEFAULT_SPREAD[symbol] || 0.5) * pip;
     const { conv } = await marketContext(symbol);
     const candles = await loadCandles(symbol, TOTAL_DAYS, now);
     if (candles.length < 20000) {
@@ -170,16 +212,20 @@ export async function optimizeSymbol(symbol, { now = Date.now() } = {}) {
       await redis.set(K.optSymbol(symbol), r, { ex: 60 * 60 * 24 * 3 });
       return r;
     }
+    const pip = pipSize(symbol, candles.at(-1).c);
+    const spread = (DEFAULT_SPREAD[symbol] || 0.5) * pip;
+    const slip = (isCrypto(symbol) ? 2 : 0.2) * pip;
     const prep = prepare(candles);
     const fromTs = Math.max(now - TOTAL_DAYS * DAY, candles[60].t);
     const testFrom = now - TEST_DAYS * DAY;
-    const env = { spread, conv, pip, digits };
+    const env = { spread, conv, pip, digits, symbol };
     const sim = (cfg, a, b, extra = {}) =>
       simulate(prep, cfg, { ...env, fromTs: a, toTs: b, ...extra });
 
     // 1. 前半で選ぶ
     const scored = [];
-    for (const p of grid()) {
+    const combos = grid(symbol);
+    for (const p of combos) {
       const cfg = { ...base, ...p };
       const m = metricsOf(sim(cfg, fromTs, testFrom), cfg);
       const s = score(m);
@@ -195,7 +241,7 @@ export async function optimizeSymbol(symbol, { now = Date.now() } = {}) {
       const full = metricsOf(fullTrades, cfg);
       const weeks = randomWeeks(fullTrades, fromTs, now, rng);
       const mc = monteCarlo(fullTrades, rng);
-      const stress = metricsOf(sim(cfg, fromTs, now, { spread: spread * 2, slip: 0.2 * pip }), cfg);
+      const stress = metricsOf(sim(cfg, fromTs, now, { spread: spread * 2, slip }), cfg);
       const nb = neighborsOf(p).map((q) =>
         metricsOf(sim({ ...base, ...q }, fromTs, now), { ...base, ...q }),
       );
@@ -237,7 +283,9 @@ export async function optimizeSymbol(symbol, { now = Date.now() } = {}) {
       at: now,
       days: round((now - fromTs) / DAY, 0),
       spreadPips: round(spread / pip, 2),
-      tested: grid().length,
+      tested: combos.length,
+      unit: isCrypto(symbol) ? "bp" : "pips",
+      kind: isCrypto(symbol) ? "crypto" : "fx",
       positiveTrain: scored.length,
       best: candidates[0] || null,
       others: candidates
@@ -270,8 +318,11 @@ export async function finalizeOptimize({ apply = false, now = Date.now() } = {})
     const pos = await redis.get(K.position);
     if (pos) applied = { status: "skipped", why: "ポジション保有中のため、決済後に切り替えます" };
     else if (pick) {
+      const assetDefaults =
+        assetOf(pick.symbol) !== assetOf(cfg.symbol) ? ASSET_DEFAULTS[assetOf(pick.symbol)] : {};
       await redis.set(K.config, {
         ...cfg,
+        ...assetDefaults,
         ...pick.params,
         symbol: pick.symbol,
         autoBlocked: false,

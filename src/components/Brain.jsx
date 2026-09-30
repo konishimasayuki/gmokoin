@@ -63,7 +63,7 @@ function Ladder({ levels, digits, mid }) {
     ...l,
     pos: "below",
   }));
-  const pip = digits === 3 ? 0.01 : 0.0001;
+  const pip = levels.unit === "bp" ? levels.price * 0.0001 : digits === 3 ? 0.01 : 0.0001;
   const all = [...rows, ...rowsB].sort((a, b) => b.price - a.price);
   const uniq = all.filter((l, i) => i === 0 || Math.abs(l.price - all[i - 1].price) > pip / 2);
   let inserted = false;
@@ -92,7 +92,9 @@ function Ladder({ levels, digits, mid }) {
               {"●".repeat(Math.min(l.touches, 6))}
             </span>
             <small className="num">
-              {mid ? `${l.price > mid ? "+" : ""}${((l.price - mid) / pip).toFixed(0)}pips` : ""}
+              {mid
+                ? `${l.price > mid ? "+" : ""}${((l.price - mid) / pip).toFixed(0)}${levels.unit || "pips"}`
+                : ""}
             </small>
           </div>
         ),

@@ -1,4 +1,17 @@
-export const SYMBOLS = ["USD_JPY", "EUR_JPY", "GBP_JPY", "AUD_JPY", "EUR_USD", "GBP_USD"];
+export const FX_SYMBOLS = ["USD_JPY", "EUR_JPY", "GBP_JPY", "AUD_JPY", "EUR_USD", "GBP_USD"];
+// GMOコイン 取引所（レバレッジ）で取引手数料が無料の銘柄
+export const CRYPTO_SYMBOLS = ["BTC_JPY", "ETH_JPY", "XRP_JPY", "BCH_JPY", "LTC_JPY"];
+export const SYMBOLS = [...FX_SYMBOLS, ...CRYPTO_SYMBOLS];
+export const isCrypto = (s) => CRYPTO_SYMBOLS.includes(s);
+export const assetOf = (s) => (isCrypto(s) ? "crypto" : "fx");
+// 値幅の単位が違うので、FX(pips)と仮想通貨(bp)で既定値を分ける
+export const ASSET_DEFAULTS = {
+  fx: { maxSpreadPips: 1.0, slMinPips: 2, slMaxPips: 8, minAtrPips: 0.4, maxAtrPips: 6 },
+  crypto: { maxSpreadPips: 8, slMinPips: 10, slMaxPips: 60, minAtrPips: 2, maxAtrPips: 60 },
+};
+const CRYPTO_DIGITS = { BTC_JPY: 0, ETH_JPY: 0, BCH_JPY: 0, LTC_JPY: 1, XRP_JPY: 3 };
+// 最小注文数量の目安（ペーパー用の近似）
+export const CRYPTO_STEP = { BTC_JPY: 0.01, ETH_JPY: 0.1, XRP_JPY: 10, BCH_JPY: 0.1, LTC_JPY: 1 };
 
 export const DEFAULT_CONFIG = {
   symbol: "USD_JPY",
@@ -21,7 +34,7 @@ export const DEFAULT_CONFIG = {
   cooldownSec: 60,
   eventBufferMin: 15,
   // 取引時間帯（JST）東京9-15時 / ロンドン16-21時 / NY21-翌2時。それ以外は取引しない
-  sessions: { tokyo: true, london: true, ny: true },
+  sessions: { tokyo: true, london: true, ny: true, other: false },
   htfFilter: true, // 5分足の向きと一致するときだけ
   beOn: true, // 建値ストップ
   beTriggerR: 1.0, // 損切り幅の何倍の含み益で建値へ
@@ -32,6 +45,7 @@ export const DEFAULT_CONFIG = {
   paperBalance: 1000000,
   riskPct: 0.5,
   maxUnits: 200000,
+  cryptoNotional: 1000000, // 仮想通貨の1回あたりの取引額（円）。レバレッジは最大2倍
   minRr: 1.0,
   signalTf: 1, // シグナルを見る足（1分 or 5分）
   symbolMode: "auto", // auto=検証結果から自動で銘柄と設定を選ぶ / manual
@@ -93,6 +107,7 @@ export const NUMERIC_LIMITS = {
   riskPct: [0.05, 5],
   maxUnits: [10000, 1000000],
   minRr: [0.3, 5],
+  cryptoNotional: [10000, 100000000],
 };
 
 const JST = 9 * 3600 * 1000;
@@ -157,12 +172,25 @@ export function hmToTs(hm, baseTs) {
   return ts;
 }
 
-export function pipSize(symbol) {
+// 値動きの単位。FXはpips、仮想通貨は価格の0.01%（bp）。仮想通貨は基準価格refが必要
+export function pipSize(symbol, ref) {
+  if (isCrypto(symbol)) return (ref > 0 ? ref : 1) * 0.0001;
   return symbol.endsWith("_JPY") ? 0.01 : 0.0001;
 }
 
+export function unitLabel(symbol) {
+  return isCrypto(symbol) ? "bp" : "pips";
+}
+
 export function priceDigits(symbol) {
+  if (isCrypto(symbol)) return CRYPTO_DIGITS[symbol] ?? 0;
   return symbol.endsWith("_JPY") ? 3 : 5;
+}
+
+// 往復の手数料（円）。仮想通貨の取引所レバレッジは取引手数料無料
+export function feeOf(symbol, units, cfg) {
+  if (isCrypto(symbol)) return 0;
+  return cfg.feeOn ? cfg.feePerUnit * units * 2 : 0;
 }
 
 export function round(v, d = 0) {

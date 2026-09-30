@@ -2,10 +2,12 @@ import { requireAuth, sendError } from "./_lib/auth.js";
 import { riskLockState } from "./_lib/engine.js";
 import { K, addLog, redis } from "./_lib/redis.js";
 import {
+  ASSET_DEFAULTS,
   BOOLEAN_KEYS,
   NUMERIC_LIMITS,
   RISK_UP_KEYS,
   SYMBOLS,
+  assetOf,
   clamp,
   mergeConfig,
 } from "./_lib/util.js";
@@ -33,7 +35,7 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "損切り幅の下限が上限を超えています" });
     for (const k of BOOLEAN_KEYS) if (typeof body[k] === "boolean") next[k] = body[k];
     if (body.sessions && typeof body.sessions === "object") {
-      for (const s of ["tokyo", "london", "ny"])
+      for (const s of ["tokyo", "london", "ny", "other"])
         if (typeof body.sessions[s] === "boolean") next.sessions[s] = body.sessions[s];
     }
     if (["fixed", "risk"].includes(body.sizingMode)) next.sizingMode = body.sizingMode;
@@ -62,6 +64,14 @@ export default async function handler(req, res) {
       if (pos) return res.status(409).json({ error: "ポジション保有中は銘柄を変更できません" });
       next.symbol = body.symbol;
       symbolChanged = true;
+      // FX⇔仮想通貨をまたぐときは単位が違うので既定値に戻す（明示指定があればそちら）
+      const a = assetOf(body.symbol);
+      if (a !== assetOf(cur.symbol)) {
+        for (const [k, v] of Object.entries(ASSET_DEFAULTS[a]))
+          if (body[k] === undefined) next[k] = v;
+        if (body.sessions === undefined)
+          next.sessions = { ...next.sessions, other: a === "crypto" };
+      }
     }
 
     await redis.set(K.config, next);

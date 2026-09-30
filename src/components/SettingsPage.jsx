@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api.js";
-import { symbolLabel } from "../format.js";
+import { isCrypto, symbolLabel } from "../format.js";
 import { Card, Toggle } from "./ui.jsx";
 
 // AIおまかせ中は自動で決まる項目
@@ -20,7 +20,8 @@ const NUM_GROUPS = [
     title: "資金と数量",
     fields: [
       ["paperBalance", "仮想の口座資金（円）", 10000],
-      ["units", "固定の取引数量（通貨）", 1000, "fixed"],
+      ["units", "固定の取引数量（通貨・FX）", 1000, "fixed"],
+      ["cryptoNotional", "1回の取引額（円・仮想通貨）", 10000, "fixed"],
       ["riskPct", "1回で失ってよい資金の割合（%）", 0.1, "risk"],
       ["maxUnits", "数量の上限（通貨）", 10000, "risk"],
     ],
@@ -159,11 +160,22 @@ export default function SettingsPage({ hasPosition, onSaved, onLogout }) {
               disabled={hasPosition}
               onChange={(e) => set("symbol", e.target.value)}
             >
-              {data.symbols.map((s) => (
-                <option key={s} value={s}>
-                  {symbolLabel(s)}
-                </option>
-              ))}
+              <optgroup label="FX">
+                {data.symbols
+                  .filter((s) => !isCrypto(s))
+                  .map((s) => (
+                    <option key={s} value={s}>
+                      {symbolLabel(s)}
+                    </option>
+                  ))}
+              </optgroup>
+              <optgroup label="仮想通貨（取引所レバレッジ）">
+                {data.symbols.filter(isCrypto).map((s) => (
+                  <option key={s} value={s}>
+                    {symbolLabel(s)}
+                  </option>
+                ))}
+              </optgroup>
             </select>
             {hasPosition && <p className="hint">ポジション保有中は変更できません。</p>}
             <div className="seg" style={{ marginTop: 8 }}>
@@ -206,9 +218,18 @@ export default function SettingsPage({ hasPosition, onSaved, onLogout }) {
             checked={form.sessions.ny}
             onChange={(v) => setSes("ny", v)}
           />
-          <p className="hint">
-            早朝（2:00〜9:00）と15:00〜16:00は、スプレッドが広がりやすいので常に取引しません。
-          </p>
+          {isCrypto(form.symbol) ? (
+            <Toggle
+              label="早朝・その他"
+              hint="2:00〜9:00と15:00〜16:00（仮想通貨は24時間動きます）"
+              checked={form.sessions.other}
+              onChange={(v) => setSes("other", v)}
+            />
+          ) : (
+            <p className="hint">
+              早朝（2:00〜9:00）と15:00〜16:00は、スプレッドが広がりやすいので常に取引しません。
+            </p>
+          )}
         </Card>
       )}
 
@@ -277,7 +298,9 @@ export default function SettingsPage({ hasPosition, onSaved, onLogout }) {
               .filter(([, , , mode]) => !mode || mode === form.sizingMode)
               .map(([k, label, step]) => (
                 <label className="field" key={k}>
-                  <span>{label}</span>
+                  <span>
+                    {isCrypto(form.symbol) ? label.replace("pips", "bp＝価格の0.01%") : label}
+                  </span>
                   <input
                     type="number"
                     inputMode="decimal"

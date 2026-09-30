@@ -6,6 +6,7 @@ import {
   hm,
   pips,
   price,
+  qtyLabel,
   symbolLabel,
   tone,
   yen,
@@ -13,7 +14,7 @@ import {
 import Chart from "./Chart.jsx";
 import { Badge, Card, Metric } from "./ui.jsx";
 
-function PositionCard({ pos, digits, onClose, closing }) {
+function PositionCard({ pos, digits, onClose, closing, unit }) {
   if (!pos) {
     return (
       <Card title="ポジション">
@@ -38,13 +39,14 @@ function PositionCard({ pos, digits, onClose, closing }) {
       <div className="pos-main">
         <b className={pos.side === "BUY" ? "up" : "down"}>{SIDE_JP[pos.side]}</b>
         <span>
-          {pos.setup}・{pos.units.toLocaleString("ja-JP")}通貨
+          {pos.setup}・{pos.units.toLocaleString("ja-JP")}
+          {qtyLabel(pos.symbol)}
         </span>
         {pos.beMoved && <Badge tone="brass">建値ストップ</Badge>}
       </div>
       <div className={`pnl num ${tone(pos.yen)}`}>
         {pips(pos.pips)}
-        <small>pips</small> {yen(pos.yen)}
+        <small>{unit}</small> {yen(pos.yen)}
       </div>
       <div className="levels">
         <div>
@@ -76,6 +78,7 @@ export default function Home({ snap, onClose, closing, onGo }) {
   const used =
     cfg?.dailyLossLimit > 0 ? Math.min(1, Math.max(0, -daily.pnl) / cfg.dailyLossLimit) : 0;
   const htf = snap?.watch?.htfDir;
+  const unit = snap?.unit || "pips";
 
   return (
     <>
@@ -97,9 +100,9 @@ export default function Home({ snap, onClose, closing, onGo }) {
           </div>
         </div>
         <div className="meta">
-          スプレッド {m ? `${m.spreadPips}pips` : "—"}
+          スプレッド {m ? `${m.spreadPips}${unit}` : "—"}
           {snap?.watch?.tf ? `・${snap.watch.tf}分足で判断` : ""}
-          {snap?.watch?.atrPips != null ? `・ATR ${snap.watch.atrPips}pips` : ""}
+          {snap?.watch?.atrPips != null ? `・ATR ${snap.watch.atrPips}${unit}` : ""}
           {htf != null
             ? `・${snap.watch.tf === 5 ? 15 : 5}分足 ${htf === 1 ? "上向き" : htf === -1 ? "下向き" : "横ばい"}`
             : ""}
@@ -113,7 +116,13 @@ export default function Home({ snap, onClose, closing, onGo }) {
       </p>
 
       <div className="grid">
-        <PositionCard pos={snap?.position} digits={d} onClose={onClose} closing={closing} />
+        <PositionCard
+          pos={snap?.position}
+          digits={d}
+          onClose={onClose}
+          closing={closing}
+          unit={unit}
+        />
 
         <Card
           title="AIの方針"

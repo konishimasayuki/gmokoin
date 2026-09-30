@@ -3,7 +3,7 @@ import { getKlines, getTickers } from "./gmo.js";
 import { computeScalpIndicators } from "./indicators.js";
 import { K, redis } from "./redis.js";
 import {
-  SESSIONS,
+  SESSION_LABEL,
   aggregate,
   buildHtf,
   buildMechanicalRegime,
@@ -16,12 +16,14 @@ import {
 } from "./strategy.js";
 import {
   businessDate,
+  feeOf,
   mergeConfig,
   pipSize,
   pnlYen,
   priceDigits,
   quoteToJpy,
   round,
+  unitLabel,
 } from "./util.js";
 
 const MIN = 60000;
@@ -36,13 +38,21 @@ export const DEFAULT_SPREAD = {
   AUD_JPY: 0.7,
   EUR_USD: 0.3,
   GBP_USD: 0.9,
+  // 仮想通貨は bp（価格の0.01%）単位の目安
+  BTC_JPY: 3,
+  ETH_JPY: 4,
+  XRP_JPY: 6,
+  BCH_JPY: 10,
+  LTC_JPY: 10,
 };
 
 async function dayCandles(symbol, bd, today) {
   const key = K.btDay(symbol, bd);
   if (bd !== today) {
     const cached = await redis.get(key);
-    if (Array.isArray(cached)) return cached;
+    // [t,o,h,l,c] の配列で保存（容量と転送量の節約）
+    if (Array.isArray(cached))
+      return cached.map((a) => ({ t: a[0], o: a[1], h: a[2], l: a[3], c: a[4] }));
   }
   let data = [];
   for (let i = 0; i < 2; i++) {
@@ -53,7 +63,13 @@ async function dayCandles(symbol, bd, today) {
       await new Promise((r) => setTimeout(r, 600));
     }
   }
-  if (data.length && bd !== today) await redis.set(key, data, { ex: 60 * 60 * 24 * 10 });
+  if (data.length && bd !== today) {
+    await redis.set(
+      key,
+      data.map((c) => [c.t, c.o, c.h, c.l, c.c]),
+      { ex: 60 * 60 * 24 * 10 },
+    );
+  }
   return data;
 }
 
@@ -134,7 +150,7 @@ export function metricsOf(trades, cfg) {
     eq += t.net;
     peak = Math.max(peak, eq);
     maxDd = Math.max(maxDd, peak - eq);
-    if (cfg.feeOn) fees += cfg.feePerUnit * t.units * 2;
+    fees += t.fee || 0;
   }
   return {
     trades: n,
@@ -151,7 +167,11 @@ export function metricsOf(trades, cfg) {
 
 // 設定1つ分のシミュレーション
 // slip: 約定のズレ（価格）。エントリーと、利確以外の決済を不利な方向にずらす
-export function simulate(prep, cfg, { spread, conv, pip, digits, fromTs, toTs, slip = 0 }) {
+export function simulate(
+  prep,
+  cfg,
+  { spread, conv, pip, digits, fromTs, toTs, slip = 0, symbol = cfg.symbol },
+) {
   const { candles, ind1, m5, ind5, regime, htfDir1, htfDir5, map5, ses, bd } = prep;
   const tf = cfg.signalTf === 5 ? 5 : 1;
   const trades = [];
@@ -172,10 +192,10 @@ export function simulate(prep, cfg, { spread, conv, pip, digits, fromTs, toTs, s
         const dir = pos.side === "BUY" ? 1 : -1;
         if (slip && r.hit.reason !== "利確") r.hit.exit -= dir * slip;
         const pips = round((dir * (r.hit.exit - pos.entry)) / pip, 1);
-        const fee = cfg.feeOn ? cfg.feePerUnit * pos.units * 2 : 0;
+        const fee = feeOf(symbol, pos.units, cfg);
         const net = round(pnlYen(pos.side, pos.entry, r.hit.exit, pos.units, conv) - fee, 0);
         const closedAt = c.t + MIN;
-        trades.push({ ...pos, exit: r.hit.exit, reason: r.hit.reason, closedAt, pips, net });
+        trades.push({ ...pos, exit: r.hit.exit, reason: r.hit.reason, closedAt, pips, net, fee });
         equity += net;
         const d = bd[i];
         daily[d] ||= { pnl: 0, trades: 0 };
@@ -237,13 +257,13 @@ export function simulate(prep, cfg, { spread, conv, pip, digits, fromTs, toTs, s
     if (!sig) continue;
     const entry = round(sig.side === "BUY" ? next.o + spread + slip : next.o - slip, digits);
     const lv = slTp({ entry, side: sig.side, atr: a, cfg, pip, digits });
-    const size = sizeUnits({ cfg, equity, slDist: lv.slDist, conv });
+    const size = sizeUnits({ cfg, equity, slDist: lv.slDist, conv, symbol, price: entry });
     if (!size.units) continue;
     lastSignalT = sc[L].t;
     pos = {
       side: sig.side,
       setup: sig.setup,
-      session: SESSIONS[sk]?.label || "不明",
+      session: SESSION_LABEL[sk] || "不明",
       units: size.units,
       entry,
       sl: lv.sl,
@@ -278,6 +298,7 @@ export function summarize(trades, key) {
 }
 
 export async function marketContext(symbol) {
+  if (symbol.endsWith("_JPY")) return { conv: 1, tickers: {} };
   const tickers = await getTickers().catch(() => ({}));
   const conv = quoteToJpy(symbol, tickers) ?? (symbol.endsWith("_JPY") ? 1 : 150);
   return { conv, tickers };
@@ -287,13 +308,13 @@ export async function runBacktest({ days = 5, spreadPips } = {}) {
   const now = Date.now();
   const cfg = mergeConfig(await redis.get(K.config));
   const symbol = cfg.symbol;
-  const pip = pipSize(symbol);
   const digits = priceDigits(symbol);
-  const spread =
-    (Number(spreadPips) > 0 ? Number(spreadPips) : DEFAULT_SPREAD[symbol] || 0.5) * pip;
   const { conv } = await marketContext(symbol);
   const candles = await loadCandles(symbol, days, now);
   if (candles.length < 500) throw new Error("過去データが不足しています");
+  const pip = pipSize(symbol, candles.at(-1).c);
+  const spread =
+    (Number(spreadPips) > 0 ? Number(spreadPips) : DEFAULT_SPREAD[symbol] || 0.5) * pip;
   const prep = prepare(candles);
   const trades = simulate(prep, cfg, {
     spread,
@@ -315,6 +336,7 @@ export async function runBacktest({ days = 5, spreadPips } = {}) {
     symbol,
     days,
     spreadPips: round(spread / pip, 2),
+    unit: unitLabel(symbol),
     note: "相場判定はClaudeではなく1時間足EMA20/50の機械判定で代用。水平線フィルター・指標停止は未反映。",
     config: {
       signalTf: cfg.signalTf,

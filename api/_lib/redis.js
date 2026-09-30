@@ -29,7 +29,7 @@ export const K = {
   reportIds: "fxbot:report_ids",
   reportLock: "fxbot:lock:report",
   backtestLast: "fxbot:backtest:last",
-  btDay: (symbol, bd) => `fxbot:bt:${symbol}:${bd}`,
+  btDay: (symbol, bd) => `fxbot:bt2:${symbol}:${bd}`,
   optimizeLast: "fxbot:optimize:last",
   optSymbol: (symbol) => `fxbot:opt:sym:${symbol}`,
   optimizeLock: "fxbot:lock:optimize",

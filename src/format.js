@@ -52,3 +52,7 @@ export function symbolLabel(s) {
 }
 
 export const CRITIC_JP = { AGREE: "同意", WEAKEN: "弱め", VETO: "却下" };
+
+export const CRYPTO = ["BTC_JPY", "ETH_JPY", "XRP_JPY", "BCH_JPY", "LTC_JPY"];
+export const isCrypto = (s) => CRYPTO.includes(s);
+export const qtyLabel = (s) => (isCrypto(s) ? s.split("_")[0] : "通貨");

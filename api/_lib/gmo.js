@@ -1,13 +1,14 @@
 import { K, redis } from "./redis.js";
-import { businessDate } from "./util.js";
+import { businessDate, isCrypto } from "./util.js";
 
-const BASE = "https://forex-api.coin.z.com/public";
+const FX_BASE = "https://forex-api.coin.z.com/public";
+const CRYPTO_BASE = "https://api.coin.z.com/public";
 const DAY = 24 * 3600 * 1000;
 
 export const INTERVAL_MS = { "1min": 60000, "5min": 300000, "1hour": 3600000 };
 
-async function get(path) {
-  const r = await fetch(BASE + path, { headers: { accept: "application/json" } });
+async function get(path, base = FX_BASE) {
+  const r = await fetch(base + path, { headers: { accept: "application/json" } });
   let j = null;
   try {
     j = await r.json();
@@ -21,7 +22,7 @@ async function get(path) {
   return j.data;
 }
 
-export async function getTickers() {
+async function getFxTickers() {
   const d = await get("/v1/ticker");
   const map = {};
   for (const t of d) {
@@ -30,9 +31,37 @@ export async function getTickers() {
   return map;
 }
 
+async function getCryptoTickers() {
+  const [d, st] = await Promise.all([
+    get("/v1/ticker", CRYPTO_BASE),
+    get("/v1/status", CRYPTO_BASE).catch(() => ({ status: "OPEN" })),
+  ]);
+  const map = {};
+  for (const t of d) {
+    // 取引所のレバレッジ銘柄は BTC_JPY の形。現物(BTC)は使わない
+    if (!String(t.symbol).endsWith("_JPY")) continue;
+    map[t.symbol] = {
+      ask: Number(t.ask),
+      bid: Number(t.bid),
+      ts: t.timestamp,
+      status: st?.status === "OPEN" ? "OPEN" : "CLOSE",
+    };
+  }
+  return map;
+}
+
+// symbolを渡すと、その銘柄に必要なレートだけ取る
+export async function getTickers(symbol) {
+  if (symbol && isCrypto(symbol)) return getCryptoTickers();
+  return getFxTickers();
+}
+
 export async function getKlines(symbol, interval, date, priceType = "BID") {
-  const q = `?symbol=${symbol}&priceType=${priceType}&interval=${interval}&date=${date}`;
-  const d = await get(`/v1/klines${q}`);
+  const crypto = isCrypto(symbol);
+  const q = crypto
+    ? `?symbol=${symbol}&interval=${interval}&date=${date}`
+    : `?symbol=${symbol}&priceType=${priceType}&interval=${interval}&date=${date}`;
+  const d = await get(`/v1/klines${q}`, crypto ? CRYPTO_BASE : FX_BASE);
   return d.map((k) => ({
     t: Number(k.openTime),
     o: Number(k.open),

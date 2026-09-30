@@ -1,6 +1,6 @@
 // ライブ運用とバックテストで共通に使う売買ロジック（副作用なし）
 import { ema } from "./indicators.js";
-import { MIN_UNITS, clamp, jstParts, round } from "./util.js";
+import { CRYPTO_STEP, MIN_UNITS, clamp, isCrypto, jstParts, round } from "./util.js";
 
 const MIN = 60000;
 
@@ -18,8 +18,11 @@ export function sessionOf(ts) {
     if (m >= s.from && m < s.to) return key;
     if (s.to > 1440 && m + 1440 >= s.from && m + 1440 < s.to) return key;
   }
-  return null;
+  // 早朝(2-9時)と15-16時。FXでは取引しない。仮想通貨は設定次第
+  return "other";
 }
+
+export const SESSION_LABEL = { tokyo: "東京", london: "ロンドン", ny: "NY", other: "早朝・その他" };
 
 export function sessionAllowed(ts, cfg) {
   const s = sessionOf(ts);
@@ -149,7 +152,22 @@ export function levelInPath(levels, side, entry, tp) {
 }
 
 // 数量：固定 or 資金に対するリスク%
-export function sizeUnits({ cfg, equity, slDist, conv }) {
+export function sizeUnits({ cfg, equity, slDist, conv, symbol, price }) {
+  if (symbol && isCrypto(symbol)) {
+    const step = CRYPTO_STEP[symbol] || 0.01;
+    const snap = (u) => Math.floor(u / step + 1e-9) * step;
+    const maxQty = snap((equity * 2) / price); // レバレッジ最大2倍
+    let qty;
+    if (cfg.sizingMode !== "risk") qty = snap(cfg.cryptoNotional / price);
+    else {
+      const perUnit = slDist * conv;
+      if (!(perUnit > 0)) return { units: 0, why: "数量を計算できません" };
+      qty = snap((equity * cfg.riskPct) / 100 / perUnit);
+    }
+    qty = Math.min(qty, maxQty);
+    if (qty < step) return { units: 0, why: "資金に対して損切り幅が大きすぎます" };
+    return { units: round(qty, 6) };
+  }
   if (cfg.sizingMode !== "risk") return { units: cfg.units };
   const riskYen = (equity * cfg.riskPct) / 100;
   const perUnit = slDist * conv;

@@ -1,7 +1,7 @@
 // 反省会担当：日次・週次の振り返りレポート
 import { arr, askClaude } from "./claude.js";
 import { K, acquireLock, getLogs, getTrades, redis } from "./redis.js";
-import { SESSIONS, sessionOf } from "./strategy.js";
+import { SESSION_LABEL, sessionOf } from "./strategy.js";
 import {
   BOOLEAN_KEYS,
   NUMERIC_LIMITS,
@@ -103,7 +103,7 @@ export async function runReport({ kind = "daily" } = {}) {
       winRate: n ? round((wins / n) * 100, 0) : 0,
       net,
       manual,
-      bySession: breakdown(trades, (t) => SESSIONS[t.session || sessionOf(t.openedAt)]?.label),
+      bySession: breakdown(trades, (t) => SESSION_LABEL[t.session || sessionOf(t.openedAt)]),
       bySetup: breakdown(trades, (t) => t.setup),
       byReason: breakdown(trades, (t) => t.reason),
     };
@@ -125,7 +125,7 @@ export async function runReport({ kind = "daily" } = {}) {
         .slice(0, 150)
         .map(
           (t) =>
-            `${jstLabel(t.openedAt).slice(11, 22)} ${t.side} ${t.setup} ${SESSIONS[t.session]?.label || ""} 判定:${t.regimeMode || "-"}(${t.regimeConfidence ?? "-"}%) ${t.reason} ${t.pips}pips ${t.net}円`,
+            `${jstLabel(t.openedAt).slice(11, 22)} ${t.side} ${t.setup} ${SESSION_LABEL[t.session] || ""} 判定:${t.regimeMode || "-"}(${t.regimeConfidence ?? "-"}%) ${t.reason} ${t.pips}pips ${t.net}円`,
         )
         .join("\n");
       const editable = Object.keys(LABELS)

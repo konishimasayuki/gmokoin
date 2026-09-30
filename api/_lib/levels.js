@@ -2,7 +2,7 @@
 import { getKlines, getTickers } from "./gmo.js";
 import { atr, ema } from "./indicators.js";
 import { K, addLog, redis } from "./redis.js";
-import { jstParts, pipSize, priceDigits, round } from "./util.js";
+import { jstParts, pipSize, priceDigits, round, unitLabel } from "./util.js";
 
 const DAY = 24 * 3600 * 1000;
 export const LEVELS_TTL_MS = DAY;
@@ -69,16 +69,16 @@ function zoneLabel(pct) {
 
 export async function buildLevels(symbol, now = Date.now()) {
   const y = jstParts(now).y;
-  const pip = pipSize(symbol);
   const d = priceDigits(symbol);
   const [tickers, daily, weekly] = await Promise.all([
-    getTickers(),
+    getTickers(symbol),
     yearly(symbol, "1day", [y - 1, y]),
     yearly(symbol, "1week", [y - 2, y - 1, y]),
   ]);
   const t = tickers[symbol];
   if (!t) throw new Error(`${symbol}のレートを取得できません`);
   const price = (t.bid + t.ask) / 2;
+  const pip = pipSize(symbol, price);
   if (daily.length < 30) throw new Error("日足データが不足しています");
 
   // 日足：直近3か月（約66本）の水平線
@@ -123,6 +123,7 @@ export async function buildLevels(symbol, now = Date.now()) {
   return {
     symbol,
     at: now,
+    unit: unitLabel(symbol),
     price: round(price, d),
     weekly: {
       trend,
@@ -162,5 +163,5 @@ export function levelsSummaryText(lv) {
   return `週足トレンド: ${lv.weekly.trend}／過去2年レンジ ${lv.weekly.rangeLow}〜${lv.weekly.rangeHigh} の${lv.weekly.positionPct}%地点（${lv.weekly.zone}）
 週足の主要ライン 上: ${f(lv.weekly.above)} ／ 下: ${f(lv.weekly.below)}
 日足（過去3か月）の主要ライン 上: ${f(lv.daily.above)} ／ 下: ${f(lv.daily.below)}
-日足ATR: ${lv.daily.atrPips} pips`;
+日足ATR: ${lv.daily.atrPips} ${lv.unit || "pips"}`;
 }
