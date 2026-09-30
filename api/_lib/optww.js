@@ -4,9 +4,18 @@ import {
   DEFAULT_SPREAD,
   loadBars,
   loadCandles,
+  loadYearBars,
   marketContext,
   metricsOf,
 } from "./backtest.js";
+import {
+  gotobiCombos,
+  gotobiLabel,
+  simulateGotobi,
+  simulateTrend,
+  trendCombos,
+  trendLabel,
+} from "./flows.js";
 import {
   METHOD_JP,
   WW_COMBOS,
@@ -33,7 +42,7 @@ import {
 } from "./util.js";
 
 // 判定ルールを変えたら上げる（同じ日の結果の使い回しを止めるため）
-export const WW_VERSION = 5;
+export const WW_VERSION = 6;
 
 // WWを検証する銘柄（既定は主要FXの6銘柄。仮想通貨は本の対象外なので外す）
 export function wwTargets(cfg) {
@@ -75,17 +84,24 @@ export const METHODS = {
     label: wwLabel,
   },
   sat: { combos: satCombos, dims: ["dirBars", "sma"], days: 90, test: 30, label: satLabel },
+  // 勝てる理由がある手法：仲値（ドル円だけ）と4時間足トレンドフォロー（5年分）
+  gotobi: {
+    combos: gotobiCombos,
+    dims: ["entryHm", "exitHm", "days"],
+    days: WW_DAYS_,
+    test: WW_TEST_DAYS_,
+    label: gotobiLabel,
+    symbols: ["USD_JPY"],
+  },
+  trend: {
+    combos: trendCombos,
+    dims: ["n", "k", "filter"],
+    days: 1825,
+    test: 730,
+    label: trendLabel,
+  },
 };
-const keyOf = (p) =>
-  [
-    p.method || "ww",
-    p.combo || "",
-    p.nExec ?? "",
-    p.level ? 1 : 0,
-    p.sma ? 1 : 0,
-    p.fib ?? "",
-    p.dirBars ?? "",
-  ].join("|");
+const keyOf = (p) => JSON.stringify(p);
 // グリッド内で1項目だけ違う設定＝設定のブレ
 function gridNeighbors(p, all) {
   const dims = METHODS[p.method || "ww"].dims;
@@ -211,6 +227,7 @@ export async function optimizeSymbolWW(symbol, { now = Date.now(), force = false
       return r;
     }
     const m1 = await loadCandles(symbol, METHODS.sat.days, now);
+    const h4 = await loadYearBars(symbol, "4hour", 5, now);
     const last = bars["1h5m"].at(-1).c;
     const pip = pipSize(symbol, last);
     const spread = (DEFAULT_SPREAD[symbol] || 0.5) * pip;
@@ -226,15 +243,25 @@ export async function optimizeSymbolWW(symbol, { now = Date.now(), force = false
       methods: {},
     };
     for (const [mk, M] of Object.entries(METHODS)) {
+      if (M.symbols && !M.symbols.includes(symbol)) continue;
+      if (mk === "trend" && h4.length < 400) continue;
       const fromTs =
         mk === "sat"
           ? Math.max(now - M.days * DAY, (m1[60] || m1[0] || { t: now }).t)
-          : Math.max(now - M.days * DAY, bars["1h5m"][300].t);
+          : mk === "trend"
+            ? Math.max(now - M.days * DAY, h4[210].t)
+            : Math.max(now - M.days * DAY, bars["1h5m"][300].t);
       const testFrom = now - M.test * DAY;
       const env = { spread, conv, pip, symbol, cfg: base, fromTs, toTs: now };
       const combos = M.combos();
       const run = (p, e) =>
-        mk === "sat" ? simulateSat(m1, p, e) : simulateWW(preps[p.combo], p, e);
+        mk === "sat"
+          ? simulateSat(m1, p, e)
+          : mk === "gotobi"
+            ? simulateGotobi(bars["1h5m"], p, e)
+            : mk === "trend"
+              ? simulateTrend(h4, p, e)
+              : simulateWW(preps[p.combo], p, e);
       const params = combos.map((p) => {
         const r = m1.length || mk !== "sat" ? run(p, env) : { trades: [], mtmDd: 0 };
         const st =
@@ -311,6 +338,7 @@ function poolMethod(mk, usable, perSymbolParams, now, balance) {
   const pooled = combos.map((p) => {
     const key = keyOf(p);
     const per = usable
+      .filter((r) => !M.symbols || M.symbols.includes(r.symbol))
       .map((r) => ({
         symbol: r.symbol,
         x: (perSymbolParams[r.symbol]?.[mk] || []).find((y) => y.key === key),
@@ -378,7 +406,7 @@ function poolMethod(mk, usable, perSymbolParams, now, balance) {
     testDays: M.test,
     params: top.p,
     label: M.label(top.p),
-    symbols: usable.length,
+    symbols: M.symbols ? usable.filter((r) => M.symbols.includes(r.symbol)).length : usable.length,
     ...j,
     curve: curve.filter((_, i) => i % step === 0 || i === curve.length - 1),
     live: {
@@ -453,7 +481,7 @@ export async function finalizeWW({ apply = false, now = Date.now() } = {}) {
     wwPool: pools.ww,
     portfolio: [],
     applied,
-    note: "クロユキ式（WW・押し戻り・フラッグWは2年分の5分足・15分足で、前の1年で選び直近1年で答え合わせ。サテライトは90日分の1分足で、前60日で選び直近30日で答え合わせ）。全銘柄をまとめた成績で判断。ロットは損失額固定（資金の0.5%）。",
+    note: "クロユキ式（WW・押し戻り・フラッグWは2年分の5分足・15分足で、前の1年で選び直近1年で答え合わせ。サテライトは90日分の1分足で前60日・直近30日。仲値はドル円のみ2年分。4時間足トレンドフォローは5年分の4時間足で前3年・直近2年）。全銘柄をまとめた成績で判断。ロットは損失額固定（資金の0.5%）。",
   };
   await redis.set(K.optimizeLast, out, { ex: 60 * 60 * 24 * 30 });
   return out;

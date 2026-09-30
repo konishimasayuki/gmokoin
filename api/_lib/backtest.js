@@ -161,6 +161,27 @@ export async function loadBars(symbol, iv, days, now) {
   return [...map.values()].sort((a, b) => a.t - b.t);
 }
 
+// 4時間足などの長期データ（年単位で取得。終わった年はずっと保存、今年は6時間ごとに取り直す）
+export async function loadYearBars(symbol, iv, years, now) {
+  const y0 = new Date(now).getUTCFullYear();
+  const out = [];
+  for (let y = y0 - years; y <= y0; y++) {
+    const key = K.barMonth(symbol, iv, String(y));
+    const cached = await redis.get(key);
+    if (Array.isArray(cached) && cached.length) {
+      out.push(...unpack(cached));
+      continue;
+    }
+    const bars = await fetchDay(symbol, iv, String(y));
+    if (bars.length)
+      await redis.set(key, pack(bars), { ex: y === y0 ? 6 * 3600 : 60 * 60 * 24 * 400 });
+    out.push(...bars);
+  }
+  const map = new Map();
+  for (const c of out) if (c.t + 4 * 60 * MIN <= now) map.set(c.t, c);
+  return [...map.values()].sort((a, b) => a.t - b.t);
+}
+
 // 設定に依存しない下ごしらえ（指標・時間帯・機械判定を一度だけ計算）
 export function prepare(candles) {
   const n = candles.length;

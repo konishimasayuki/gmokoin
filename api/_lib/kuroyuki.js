@@ -6,7 +6,14 @@ import { SESSION_LABEL, aggregate, sessionOf, sizeUnits } from "./strategy.js";
 import { feeOf, isCrypto, pnlYen, round } from "./util.js";
 
 const MIN = 60000;
-export const METHOD_JP = { ww: "WW", oshi: "押し戻り", flag: "フラッグW", sat: "サテライト" };
+export const METHOD_JP = {
+  ww: "WW",
+  oshi: "押し戻り",
+  flag: "フラッグW",
+  sat: "サテライト",
+  gotobi: "仲値",
+  trend: "トレンドフォロー",
+};
 // base＝読み込む足（その足をそのまま執行足にする）
 export const WW_COMBOS = {
   "1h5m": { base: 5, iv: "5min", upper: 60, mid: 15, exec: 5, label: "1時間足×5分足" },

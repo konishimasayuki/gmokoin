@@ -272,6 +272,8 @@ const METHOD_NAME = {
   oshi: "クロユキ押し戻り",
   flag: "クロユキフラッグW",
   sat: "クロユキサテライト",
+  gotobi: "仲値（ゴトー日）",
+  trend: "4時間足トレンドフォロー",
 };
 const fmtT = (ts) => (ts ? mdhm(ts) : "—");
 const fp = (v, sym) =>
@@ -303,15 +305,30 @@ function wwText(pool, days, testDays) {
 }
 
 function wwTradesText(pool) {
-  const out = [
-    `【${METHOD_NAME[pool.method || "ww"]} 取引一覧（新しい順・日本時間）】`,
-    "銘柄 売買 エントリー時刻 / A・B・C・D（時刻 価格）/ ミニWネック / 入 損切 利確 / 結果",
-  ];
+  const out = [`【${METHOD_NAME[pool.method || "ww"]} 取引一覧（新しい順・日本時間）】`];
+  const hasW = pool.sample.some((t) => t.ww);
+  out.push(
+    hasW
+      ? "銘柄 売買 エントリー時刻 / A・B・C・D（時刻 価格）/ ネック / 入 損切 利確 / 結果"
+      : "銘柄 売買 エントリー時刻 / 入 損切 決済 / 決済時刻 / 結果",
+  );
   for (const t of pool.sample) {
-    const w = t.ww || {};
+    const w = t.ww;
+    const side = t.side === "BUY" ? "買い" : "売り";
+    const res = `${t.reason} ${t.net > 0 ? "+" : ""}${t.net}円`;
+    if (!w) {
+      out.push(
+        `${symbolLabel(t.symbol)} ${side} ${fmtT(t.openedAt)} / 入${fp(t.entry, t.symbol)} 損${fp(t.sl, t.symbol)} 決済${fp(t.exit, t.symbol)} / ${fmtT(t.closedAt)} / ${res}`,
+      );
+      continue;
+    }
     const pt = (x) => (x ? `${fmtT(x[0])} ${fp(x[1], t.symbol)}` : "—");
+    const touch =
+      t.method === "flag"
+        ? `チャネル 下${Math.floor(w.touches / 10)}点・上${w.touches % 10}点`
+        : `反応${w.touches}点`;
     out.push(
-      `${symbolLabel(t.symbol)} ${t.side === "BUY" ? "買い" : "売り"} ${fmtT(t.openedAt)} / A ${pt(w.A)} B ${pt(w.B)} C ${pt(w.C)} D ${pt(w.D)} / ネック${fp(w.miniNeck, t.symbol)} 反応${w.touches}点 / 入${fp(t.entry, t.symbol)} 損${fp(t.sl, t.symbol)} 利${fp(t.tp, t.symbol)} / ${t.reason} ${t.net > 0 ? "+" : ""}${t.net}円`,
+      `${symbolLabel(t.symbol)} ${side} ${fmtT(t.openedAt)} / A ${pt(w.A)} B ${pt(w.B)} C ${pt(w.C)} D ${pt(w.D)} / ネック${fp(w.miniNeck, t.symbol)} ${touch} / 入${fp(t.entry, t.symbol)} 損${fp(t.sl, t.symbol)} 利${fp(t.tp, t.symbol)} / ${res}`,
     );
   }
   return out.join("\n");
@@ -403,7 +420,7 @@ function Optimize({ result: raw, loading, onRun, onUse, auto, progress }) {
   return (
     <Card title="AIによる銘柄・設定の自動選定">
       <p className="hint">
-        いまはクロユキ式（WW・押し戻り・フラッグW・サテライト）だけを、主要FX6銘柄（ドル円・ユーロ円・ポンド円・豪ドル円・ユーロドル・ポンドドル）で検証しています。手法ごとに4〜16通りの設定を試し、全銘柄をまとめた成績で6段階の検証をします（サテライトは90日分の1分足で前60日・直近30日、ほかは2年分の5分足・15分足で前の1年・直近1年）。
+        いまはクロユキ式（WW・押し戻り・フラッグW・サテライト）と、勝てる理由がある2手法（仲値・4時間足トレンドフォロー）を、主要FX6銘柄（ドル円・ユーロ円・ポンド円・豪ドル円・ユーロドル・ポンドドル）で検証しています。手法ごとに4〜16通りの設定を試し、全銘柄をまとめた成績で6段階の検証をします（サテライトは90日分の1分足で前60日・直近30日、ほかは2年分の5分足・15分足で前の1年・直近1年）。
       </p>
       <button type="button" className="primary" onClick={onRun} disabled={loading.optimize}>
         {loading.optimize ? "検証中…" : auto ? "いま選び直す" : "全銘柄で検証する"}
