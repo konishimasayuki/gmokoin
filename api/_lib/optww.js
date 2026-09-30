@@ -15,7 +15,7 @@ import {
 } from "./util.js";
 
 // 判定ルールを変えたら上げる（同じ日の結果の使い回しを止めるため）
-export const WW_VERSION = 2;
+export const WW_VERSION = 3;
 
 // WWを検証する銘柄（既定は主要FXの6銘柄。仮想通貨は本の対象外なので外す）
 export function wwTargets(cfg) {
@@ -28,12 +28,12 @@ export const WW_DAYS = 365;
 export const WW_TEST_DAYS = 120;
 const RESULT_TTL = 12 * 3600 * 1000;
 
-const keyOf = (p) => `${p.combo}|${p.nExec}|${p.level ? 1 : 0}|${p.rr}`;
+const keyOf = (p) => `${p.combo}|${p.nExec}|${p.level ? 1 : 0}|${p.sma ? 1 : 0}`;
 // グリッド内で1項目だけ違う設定＝設定のブレ
 function gridNeighbors(p, all) {
   return all.filter((q) => {
     if (q.combo !== p.combo) return false;
-    const diff = [q.nExec !== p.nExec, q.level !== p.level, q.rr !== p.rr].filter(Boolean).length;
+    const diff = [q.nExec !== p.nExec, q.level !== p.level, q.sma !== p.sma].filter(Boolean).length;
     return diff === 1;
   });
 }

@@ -139,26 +139,38 @@ function dowStates(bars, n) {
 }
 
 // 目立つ高値・安値のゾーン（A-4）：反応2回以上、または上位足の押し安値・戻り高値
+// 右山（Wトップの頂上）が当たるべき抵抗帯（本の「戻り売りは戻り高値と目立つ安値に線を引く」）
+//  - 上位足の戻り高値
+//  - 割り込まれた過去の安値（ラス押し・レジサポ転換で抵抗に変わった線）
+//  - 2回以上反応している過去の高値
+//  - 上位足の200SMA
+// 買い（Wボトム）は鏡のチャートで同じ判定になる
 function zonesAt(tfs, t) {
-  const pts = [];
-  const keys = [];
+  const out = [];
   for (const f of tfs) {
     const iNow = f.idxAt(t);
     if (iNow < 0) continue;
     const a = f.atr[iNow] || 0;
-    const conf = [...f.sw.highs, ...f.sw.lows].filter((s) => s.confirm <= iNow && iNow - s.i < 400);
-    for (const s of conf.slice(-60)) pts.push({ p: s.p, tol: a * 0.3 });
     const st = f.dow?.[iNow];
-    if (st?.keyLow) keys.push(st.keyLow);
-    if (st?.keyHigh) keys.push(st.keyHigh);
-    if (f.sma200?.[iNow]) keys.push(f.sma200[iNow]);
+    if (st?.keyHigh) out.push(st.keyHigh);
+    if (f.dow && f.sma200?.[iNow]) out.push(f.sma200[iNow]);
+    const lows = f.sw.lows.filter((s) => s.confirm <= iNow && iNow - s.i < 300).slice(-20);
+    for (const l of lows) {
+      let broken = false;
+      for (let k = l.confirm + 1; k <= iNow; k++) {
+        if (f.bars[k].c < l.p) {
+          broken = true;
+          break;
+        }
+      }
+      if (broken) out.push(l.p);
+    }
+    const highs = f.sw.highs.filter((s) => s.confirm <= iNow && iNow - s.i < 300).slice(-20);
+    for (const h of highs) {
+      if (highs.filter((x) => x !== h && Math.abs(x.p - h.p) <= a * 0.3).length >= 1) out.push(h.p);
+    }
   }
-  const zones = [];
-  for (const x of pts) {
-    const cnt = pts.filter((y) => Math.abs(y.p - x.p) <= x.tol).length;
-    if (cnt >= 2) zones.push(x.p);
-  }
-  return [...zones, ...keys];
+  return out;
 }
 
 // 3点以上反応する上昇トレンドライン（A-5）。points は古い順の安値（1点目＝ネックライン）
@@ -251,7 +263,7 @@ export function wwPrep(prep, combo, nExec, nUpper = 6) {
       mid: tfPack(md, c.mid, nUpper, false),
     };
   };
-  const out = { combo: c, exec, sell: side(false), buy: side(true) };
+  const out = { combo: c, exec, execAtr: atr(exec, 14), sell: side(false), buy: side(true) };
   prep.ww[key] = out;
   return out;
 }
@@ -323,8 +335,10 @@ export function detect(v, i, gp, used) {
     let m = Number.POSITIVE_INFINITY;
     for (let k = h1.i + 1; k < h2.i; k++) m = Math.min(m, bars[k].l);
     if (!Number.isFinite(m)) continue;
-    const top = C.p + 0.6 * (D - C.p);
+    // ミニWトップは右山の頂上付近の小さなW（山は上位20%、ネックラインも上位35%以内）
+    const top = C.p + 0.8 * (D - C.p);
     if (h1.p < top || h2.p < top) continue;
+    if (m < C.p + 0.65 * (D - C.p)) continue;
     const r2 = (h2.p - m) / (h1.p - m);
     if (!(r2 >= 0.5 && r2 <= 1.5)) continue;
     if (i - h2.i > 12) continue;
@@ -485,11 +499,19 @@ export function simulateWW(prep, gp, env) {
           )
         )
           continue;
+        // 指標などの急変直後は見送り（直近6本に、平均の3倍を超える足がある）
+        if (gp.spike !== false) {
+          const a0 = W.execAtr[i];
+          let spiky = false;
+          for (let k = Math.max(0, i - 5); k <= i; k++)
+            if (a0 && bars[k].h - bars[k].l > 3 * a0) spiky = true;
+          if (spiky) continue;
+        }
         const s = detect(v, i, gp, used[side]);
         if (!s) continue;
         if (gp.level) {
           const zs = zonesAt([v.upper, v.mid], tEnd);
-          const tol = (v.mid.atr[v.mid.idxAt(tEnd)] || v.execAtr[i]) * 0.5;
+          const tol = (v.mid.atr[v.mid.idxAt(tEnd)] || v.execAtr[i]) * 0.3;
           if (!zs.some((z) => Math.abs(z - s.D) <= tol)) continue;
         }
         armed = { side, ...s };
@@ -518,8 +540,18 @@ export function wwCombos() {
   for (const combo of Object.keys(WW_COMBOS))
     for (const nExec of [3, 4])
       for (const level of [true, false])
-        for (const rr of [1, 1.2])
-          out.push({ strategy: "ww", combo, nExec, level, rr, sma: false, tlTol: 0.25, slBuf: 1 });
+        for (const sma of [false, true])
+          out.push({
+            strategy: "ww",
+            combo,
+            nExec,
+            level,
+            rr: 1,
+            sma,
+            tlTol: 0.25,
+            slBuf: 1,
+            spike: true,
+          });
   return out;
 }
 
@@ -532,9 +564,10 @@ export function wwNeighbors(p) {
     { ...p, slBuf: 0 },
     { ...p, slBuf: 2 },
     { ...p, sma: !p.sma },
+    { ...p, spike: false },
   ];
 }
 
 export function wwLabel(p) {
-  return `クロユキWW・${WW_COMBOS[p.combo].label}・山谷${p.nExec}本・${p.level ? "上位足の水平線あり" : "水平線なし"}・利確${p.rr}倍${p.sma ? "・移動平均フィルター" : ""}`;
+  return `クロユキWW・${WW_COMBOS[p.combo].label}・山谷${p.nExec}本・${p.level ? "上位足の抵抗帯・支持帯あり" : "水平線なし"}${p.sma ? "・20/200SMAの向き" : ""}・利確${p.rr}倍${p.spike === false ? "・急変フィルターなし" : ""}`;
 }
